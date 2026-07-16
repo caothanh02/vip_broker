@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
-from trading_bot.domain.models import Candle, OrderRequest, Position, Side, Trade
+from trading_bot.data.validation import validate_candles
+from trading_bot.domain.models import Candle, OrderRequest, Position, Side, StrategySignal, Trade
 from trading_bot.execution.broker import SimulatedBroker
 from trading_bot.features.pipeline import build_features
 from trading_bot.risk.engine import RiskEngine
@@ -50,53 +51,65 @@ class CandleBacktester:
         )
 
     def run(self, candles: list[Candle]) -> BacktestResult:
+        validate_candles(candles)
         result = BacktestResult()
         position: Position | None = None
-        pending = None
+        pending: StrategySignal | None = None
         cash = self.settings.starting_cash
         features = build_features(candles)
         for i, candle in enumerate(candles):
-            if not candle.is_closed:
-                continue
+            opening_equity = cash + (position.quantity * candle.open if position else Decimal("0"))
+            self.risk.mark_to_market(candle.open_time, opening_equity)
             if pending is not None:
-                decision, signal = pending
-                request = OrderRequest(
-                    "BTC/USDT", Side.BUY, decision.quantity, signal.signal_id, signal.signal_id
-                )
-                fill = self.broker.place_order(request, candle.open, candle.open_time)
-                cash -= fill.price * fill.quantity + fill.fee
-                position = Position(
-                    "BTC/USDT",
-                    fill.quantity,
-                    fill.price,
-                    decision.stop_price or Decimal("0"),
-                    fill.price,
+                # The execution price, stop and size are all derived at the
+                # next open.  A signal-close price is never used for sizing.
+                decision = self.risk.decide(
                     candle.open_time,
-                    fill.fee,
+                    cash,
+                    cash,
+                    candle.open,
+                    Decimal(str(pending.atr)),
+                    False,
                 )
-                result.total_fees += fill.fee
-                result.total_slippage += fill.slippage
+                if decision.accepted:
+                    request = OrderRequest(
+                        "BTC/USDT",
+                        Side.BUY,
+                        decision.quantity,
+                        pending.signal_id,
+                        pending.signal_id,
+                    )
+                    fill = self.broker.place_order(request, candle.open, candle.open_time)
+                    entry_cost = fill.price * fill.quantity + fill.fee
+                    if entry_cost > cash:
+                        raise RuntimeError("risk-approved entry exceeds cash")
+                    cash -= entry_cost
+                    position = Position(
+                        "BTC/USDT",
+                        fill.quantity,
+                        fill.price,
+                        decision.stop_price or Decimal("0"),
+                        fill.price,
+                        candle.open_time,
+                        fill.fee,
+                    )
+                    result.total_fees += fill.fee
+                    result.total_slippage += fill.slippage
                 pending = None
             if position:
-                atr = features.iloc[i].atr14
-                if atr == atr and atr > 0:
-                    position.stop_price = max(
-                        position.stop_price,
-                        position.highest_price
-                        - Decimal(str(self.settings.trailing_atr_multiple * float(atr))),
-                    )
-                position.highest_price = max(position.highest_price, candle.high)
                 # Conservative OHLC rule: a reachable stop is filled before crossover exits.
-                reason = (
-                    "stop_loss_or_trailing"
-                    if candle.low <= position.stop_price
-                    else (
-                        "ema_cross_down"
-                        if self.strategy.exit_crossover(features.iloc[: i + 1])
-                        else None
-                    )
-                )
+                stopped = candle.low <= position.stop_price
+                reason = "stop_loss_or_trailing" if stopped else None
+                if reason is None and self.strategy.exit_crossover(features.iloc[: i + 1]):
+                    reason = "ema_cross_down"
                 if reason:
+                    # A stop crossed by the opening gap cannot receive the
+                    # better stop price.  The broker then applies exit slippage.
+                    exit_price = (
+                        candle.open
+                        if stopped and candle.open <= position.stop_price
+                        else (position.stop_price if stopped else candle.close)
+                    )
                     fill = self.broker.place_order(
                         OrderRequest(
                             "BTC/USDT",
@@ -105,7 +118,7 @@ class CandleBacktester:
                             f"exit-{position.opened_at.isoformat()}",
                             "exit",
                         ),
-                        position.stop_price if reason.startswith("stop") else candle.close,
+                        exit_price,
                         candle.close_time,
                     )
                     proceeds = fill.price * fill.quantity - fill.fee
@@ -127,21 +140,31 @@ class CandleBacktester:
                     result.total_slippage += fill.slippage
                     self.risk.record_closed_trade(candle.close_time, pnl, cash)
                     position = None
+                else:
+                    # Current-candle high/low and ATR are available only after
+                    # all intrabar events above have been resolved.  This stop
+                    # applies from the following candle onward.
+                    atr = features.iloc[i].atr14
+                    if atr == atr and atr > 0:
+                        position.highest_price = max(position.highest_price, candle.high)
+                        position.stop_price = max(
+                            position.stop_price,
+                            position.highest_price
+                            - Decimal(str(self.settings.trailing_atr_multiple * float(atr))),
+                        )
             equity = cash + (position.quantity * candle.close if position else Decimal("0"))
             result.equity_curve.append((candle.close_time, equity))
+            self.risk.mark_to_market(candle.close_time, equity)
             if i < len(candles) - 1 and position is None:
                 entry_signal = self.strategy.entry(
-                    features.iloc[: i + 1], False, False, self.risk.state.circuit_open
+                    features.iloc[: i + 1],
+                    False,
+                    bool(
+                        self.risk.state.cooldown_until
+                        and candle.close_time < self.risk.state.cooldown_until
+                    ),
+                    self.risk.state.circuit_open,
                 )
                 if entry_signal:
-                    decision = self.risk.decide(
-                        candle.close_time,
-                        equity,
-                        cash,
-                        candle.close,
-                        Decimal(str(entry_signal.atr)),
-                        False,
-                    )
-                    if decision.accepted:
-                        pending = (decision, entry_signal)
+                    pending = entry_signal
         return result

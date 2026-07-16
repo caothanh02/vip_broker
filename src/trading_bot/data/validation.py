@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from trading_bot.domain.models import Candle
 
@@ -22,8 +22,10 @@ def validate_candles(candles: list[Candle], max_age: timedelta | None = None) ->
             raise CandleValidationError("open candle")
         if candle.open_time in seen:
             raise CandleValidationError("duplicate timestamp")
-        if min(candle.open, candle.high, candle.low, candle.close, candle.volume) < 0:
-            raise CandleValidationError("negative OHLCV")
+        if min(candle.open, candle.high, candle.low, candle.close) <= 0 or candle.volume < 0:
+            raise CandleValidationError("invalid OHLCV")
+        if candle.close_time - candle.open_time != interval:
+            raise CandleValidationError("invalid candle duration")
         if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(
             candle.open, candle.close, candle.high
         ):
@@ -32,6 +34,8 @@ def validate_candles(candles: list[Candle], max_age: timedelta | None = None) ->
             raise CandleValidationError("data gap or bad interval")
         seen.add(candle.open_time)
         previous = candle.open_time
+    if max_age is not None and datetime.now(UTC) - candles[-1].close_time > max_age:
+        raise CandleValidationError("stale data")
 
 
 def deduplicate(candles: list[Candle]) -> list[Candle]:
