@@ -1,0 +1,9 @@
+strategy:
+  ema_fast: 20
+  ema_slow: 50
+  ema_trend: 200
+  volume_window: 20
+  volume_multiplier: 1.2
+  atr_window: 14
+  stop_atr_multiple: 2.0
+  trailing_atr_multiple: 2.0

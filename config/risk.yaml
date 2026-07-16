@@ -1,0 +1,9 @@
+risk:
+  risk_per_trade: "0.005"
+  max_exposure: "0.30"
+  max_daily_loss: "0.03"
+  max_drawdown: "0.10"
+  consecutive_loss_limit: 3
+  cooldown_hours: 24
+  min_notional: "10"
+  quantity_step: "0.000001"

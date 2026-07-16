@@ -1,0 +1,29 @@
+bot:
+  mode: backtest
+  symbol: BTC/USDT
+  timeframe: 1h
+  ml_filter_enabled: false
+execution:
+  starting_cash: "10000"
+  entry_fee_rate: "0.001"
+  exit_fee_rate: "0.001"
+  entry_slippage_rate: "0.0005"
+  exit_slippage_rate: "0.0005"
+strategy:
+  ema_fast: 20
+  ema_slow: 50
+  ema_trend: 200
+  volume_window: 20
+  volume_multiplier: 1.2
+  atr_window: 14
+  stop_atr_multiple: 2.0
+  trailing_atr_multiple: 2.0
+risk:
+  risk_per_trade: "0.005"
+  max_exposure: "0.30"
+  max_daily_loss: "0.03"
+  max_drawdown: "0.10"
+  consecutive_loss_limit: 3
+  cooldown_hours: 24
+  min_notional: "10"
+  quantity_step: "0.000001"

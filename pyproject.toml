@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "btc-trading-bot"
+version = "0.1.0"
+description = "Safe, reproducible BTC/USDT spot trading research and dry-run bot"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = ["httpx>=0.27,<1", "numpy>=1.26,<3", "pandas>=2.2,<3", "pydantic-settings>=2.3,<3", "PyYAML>=6,<7", "scikit-learn>=1.5,<2", "sqlalchemy>=2.0,<3", "websockets>=12,<16"]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+lightgbm = ["lightgbm>=4.5,<5"]
+dev = ["mypy>=1.11,<2", "pytest>=8.3,<9", "pytest-asyncio>=0.24,<1", "ruff>=0.6,<1", "types-PyYAML>=6.0.12"]
+
+[project.scripts]
+trading-bot = "trading_bot.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trading_bot"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+exclude = ["tests"]

@@ -1,0 +1,16 @@
+services:
+  trading-bot:
+    build: .
+    env_file: .env
+    command: ["trading-bot", "dry-run"]
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: trading_bot
+      POSTGRES_USER: trading_bot
+      POSTGRES_PASSWORD: change-me
+    ports: ["5432:5432"]
