@@ -1,13 +1,15 @@
 """Regression coverage for quantitative-safety invariants."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from math import isinf
 
 import pandas as pd
 import pytest
 
-from trading_bot.backtest.engine import CandleBacktester
-from trading_bot.domain.models import Candle, Side, StrategySignal
+from trading_bot.backtest.engine import BacktestResult, CandleBacktester
+from trading_bot.data.validation import validate_candles
+from trading_bot.domain.models import Candle, Side, StrategySignal, Trade
 from trading_bot.risk.engine import RiskEngine, RiskState
 from trading_bot.settings import BotSettings
 
@@ -102,6 +104,7 @@ def test_gap_through_stop_is_not_filled_at_a_better_than_open_price(
 
     assert len(result.trades) == 1
     assert result.trades[0].exit_price <= Decimal("70")
+    assert result.trades[0].exit_time == datetime(2024, 1, 1, 2, tzinfo=UTC)
 
 
 def test_daily_loss_limit_resets_at_next_utc_day() -> None:
@@ -186,6 +189,7 @@ def test_same_bar_stop_uses_preexisting_stop(monkeypatch: pytest.MonkeyPatch) ->
 
     assert len(result.trades) == 1
     assert result.trades[0].exit_price == Decimal("80.00997500")
+    assert result.trades[0].exit_time == datetime(2024, 1, 1, 2, tzinfo=UTC)
 
 
 def test_final_open_position_is_marked_to_market(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -252,3 +256,124 @@ def test_backtester_rejects_empty_and_open_candle_input() -> None:
     )
     with pytest.raises(ValueError, match="open candle"):
         backtester.run([invalid])
+
+
+def test_ema_exit_fills_at_next_candle_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    backtester = CandleBacktester(BotSettings())
+    _always_signal_once(backtester, monkeypatch)
+    monkeypatch.setattr(backtester.strategy, "exit_crossover", lambda frame: len(frame) == 2)
+
+    result = backtester.run(
+        [
+            candle(0, "100", "95", "100"),
+            candle(1, "100", "95", "100"),
+            candle(2, "120", "110", "120"),
+        ]
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason == "ema_cross_down"
+    assert result.trades[0].exit_time == datetime(2024, 1, 1, 2, tzinfo=UTC)
+    assert result.trades[0].exit_price == Decimal("119.9400")
+
+
+def test_circuit_breaker_liquidates_at_next_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = BotSettings(
+        risk_per_trade=Decimal("1"),
+        max_exposure=Decimal("1"),
+        max_drawdown=Decimal("0.10"),
+    )
+    backtester = CandleBacktester(settings)
+    _always_signal_once(backtester, monkeypatch)
+
+    result = backtester.run(
+        [
+            candle(0, "100", "95", "100"),
+            candle(1, "100", "85", "85"),
+            candle(2, "80", "70", "80"),
+        ]
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason == "circuit_breaker_emergency_liquidation"
+    assert result.trades[0].exit_time == datetime(2024, 1, 1, 2, tzinfo=UTC)
+    assert result.trades[0].exit_price == Decimal("79.9600")
+
+
+def test_unrealized_daily_equity_loss_opens_daily_breaker() -> None:
+    settings = BotSettings(max_daily_loss=Decimal("0.03"))
+    engine = RiskEngine(settings)
+    now = datetime(2024, 1, 1, tzinfo=UTC)
+    engine.mark_to_market(now, Decimal("10000"))
+    engine.mark_to_market(now + timedelta(hours=1), Decimal("9600"))
+
+    decision = engine.decide(
+        now + timedelta(hours=1),
+        Decimal("9600"),
+        Decimal("9600"),
+        Decimal("100"),
+        Decimal("10"),
+        False,
+    )
+    assert engine.state.daily_pnl == Decimal("0")
+    assert not decision.accepted
+    assert decision.reason == "daily_loss_limit"
+
+
+def test_profit_factor_without_losses_is_infinite() -> None:
+    started = datetime(2024, 1, 1, tzinfo=UTC)
+    result = BacktestResult(
+        trades=[
+            Trade(
+                "BTC/USDT",
+                Decimal("1"),
+                Decimal("100"),
+                Decimal("110"),
+                started,
+                started + timedelta(hours=1),
+                Decimal("10"),
+                Decimal("0"),
+                "test",
+            )
+        ],
+        equity_curve=[
+            (started, Decimal("10000")),
+            (started + timedelta(hours=1), Decimal("10010")),
+        ],
+    )
+
+    metrics = result.metrics()
+    assert isinf(metrics["profit_factor"])
+    assert {
+        "max_drawdown",
+        "expectancy",
+        "average_win",
+        "average_loss",
+        "sharpe",
+        "sortino",
+        "exposure_time",
+        "max_consecutive_wins",
+        "max_consecutive_losses",
+        "buy_and_hold_return",
+    } <= metrics.keys()
+
+
+@pytest.mark.parametrize(
+    "opened",
+    [datetime(2024, 1, 1), datetime(2024, 1, 1, tzinfo=timezone(timedelta(hours=7)))],
+)
+def test_validation_rejects_naive_and_non_utc_timestamps(opened: datetime) -> None:
+    invalid = Candle(
+        opened,
+        opened + timedelta(hours=1),
+        "BTC/USDT",
+        "1h",
+        Decimal("100"),
+        Decimal("101"),
+        Decimal("99"),
+        Decimal("100"),
+        Decimal("1000"),
+        True,
+    )
+    with pytest.raises(ValueError, match="timestamp"):
+        validate_candles([invalid])

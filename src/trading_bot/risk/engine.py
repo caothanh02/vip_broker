@@ -14,6 +14,7 @@ class RiskState:
     day_start_equity: Decimal
     daily_pnl: Decimal = Decimal("0")
     daily_pnl_date: date | None = None
+    daily_loss_open: bool = False
     consecutive_losses: int = 0
     cooldown_until: datetime | None = None
     circuit_open: bool = False
@@ -33,11 +34,14 @@ class RiskEngine:
             self.state.day_start_equity = equity
             self.state.daily_pnl = Decimal("0")
             self.state.daily_pnl_date = today
+            self.state.daily_loss_open = False
 
     def mark_to_market(self, now: datetime, equity: Decimal) -> None:
         """Record candle-close equity before considering a subsequent entry."""
         self._reset_daily_state_if_needed(now, equity)
         self.state.peak_equity = max(self.state.peak_equity, equity)
+        if equity <= self.state.day_start_equity * (1 - self.settings.max_daily_loss):
+            self.state.daily_loss_open = True
         if equity <= self.state.peak_equity * (1 - self.settings.max_drawdown):
             self.state.circuit_open = True
 
@@ -65,7 +69,10 @@ class RiskEngine:
             return RiskDecision(False, "cooldown")
         if atr <= 0:
             return RiskDecision(False, "invalid_atr")
-        if self.state.daily_pnl <= -(self.state.day_start_equity * self.settings.max_daily_loss):
+        if self.state.daily_loss_open or equity <= self.state.day_start_equity * (
+            1 - self.settings.max_daily_loss
+        ):
+            self.state.daily_loss_open = True
             return RiskDecision(False, "daily_loss_limit")
         if equity <= self.state.peak_equity * (1 - self.settings.max_drawdown):
             self.state.circuit_open = True
