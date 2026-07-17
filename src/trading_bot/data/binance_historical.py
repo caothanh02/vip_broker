@@ -8,11 +8,13 @@ from typing import Any
 import httpx
 
 from trading_bot.data.binance_parser import BinanceKlineParseError, parse_binance_spot_1h_kline
+from trading_bot.data.time_ranges import validate_hour_aligned_range
 from trading_bot.domain.models import Candle
 
 BINANCE_REST = "https://api.binance.com/api/v3"
 _INTERVAL = timedelta(hours=1)
 _MAX_LIMIT = 1000
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class BinanceDataError(RuntimeError):
@@ -29,12 +31,6 @@ class BinanceResponseError(BinanceDataError):
 
 Sleep = Callable[[float], Awaitable[None]]
 Clock = Callable[[], datetime]
-
-
-def _utc(value: datetime, field: str) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise BinanceResponseError(f"{field} must be timezone-aware")
-    return value.astimezone(UTC)
 
 
 class BinanceHistoricalDataClient:
@@ -66,10 +62,10 @@ class BinanceHistoricalDataClient:
 
     async def fetch_closed(self, start_time: datetime, end_time: datetime) -> list[Candle]:
         """Fetch the half-open UTC range ``[start_time, end_time)`` page by page."""
-        start = _utc(start_time, "start_time")
-        end = _utc(end_time, "end_time")
+        start, end = validate_hour_aligned_range(start_time, end_time)
+        end = min(end, _closed_hour_boundary(self.now()))
         if end <= start:
-            raise ValueError("end_time must be after start_time")
+            return []
         cursor = start
         candles: list[Candle] = []
         seen_open_times: set[datetime] = set()
@@ -102,8 +98,8 @@ class BinanceHistoricalDataClient:
         params: dict[str, str | int] = {
             "symbol": "BTCUSDT",
             "interval": "1h",
-            "startTime": int(cursor.timestamp() * 1000),
-            "endTime": int(end.timestamp() * 1000) - 1,
+            "startTime": _milliseconds(cursor),
+            "endTime": _milliseconds(end) - 1,
             "limit": self.page_limit,
         }
         for attempt in range(self.max_retries + 1):
@@ -149,3 +145,18 @@ class BinanceHistoricalDataClient:
             return parse_binance_spot_1h_kline(row)
         except BinanceKlineParseError as exc:
             raise BinanceResponseError(str(exc)) from exc
+
+
+def _closed_hour_boundary(now: datetime) -> datetime:
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise BinanceDataError("clock must return a timezone-aware timestamp")
+    normalized = now.astimezone(UTC)
+    return normalized.replace(minute=0, second=0, microsecond=0)
+
+
+def _milliseconds(value: datetime) -> int:
+    delta = value - _EPOCH
+    milliseconds = delta.days * 86_400_000 + delta.seconds * 1000 + delta.microseconds // 1000
+    if milliseconds < 0 or delta.microseconds % 1000:
+        raise BinanceDataError("invalid millisecond timestamp")
+    return milliseconds

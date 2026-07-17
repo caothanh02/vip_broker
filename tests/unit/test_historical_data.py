@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
@@ -19,11 +20,13 @@ from trading_bot.data.binance_historical import (
 )
 from trading_bot.data.binance_parser import (
     BinanceKlineParseError,
+    datetime_from_milliseconds,
     parse_binance_spot_1h_kline,
     parse_binance_spot_1h_websocket_kline,
 )
 from trading_bot.data.csv_store import (
     CsvDataError,
+    csv_sha256,
     merge_candles,
     read_candles,
     write_candles_atomic,
@@ -104,15 +107,22 @@ def test_binance_client_paginates_without_duplicates() -> None:
 
 
 def test_binance_client_omits_current_open_candle() -> None:
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[kline(0)]))
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=[kline(0)])
+
     candles = asyncio.run(
         BinanceHistoricalDataClient(
-            transport=transport,
+            transport=httpx.MockTransport(handler),
             now=lambda: BASE + timedelta(minutes=30),
             backoff_seconds=0,
         ).fetch_closed(BASE, BASE + timedelta(hours=1))
     )
     assert candles == []
+    assert calls == 0
 
 
 def test_binance_client_retries_429_and_fails_malformed_payload() -> None:
@@ -237,7 +247,9 @@ def test_cli_backtests_csv_and_writes_report(tmp_path: Path) -> None:
     assert payload["input_file"] == str(data)
     assert payload["candle_count"] == 240
     assert main(["validate-data", "--input", str(tmp_path / "missing.csv")]) == 1
-    assert parse_utc("2024-01-01").tzinfo is UTC
+    assert parse_utc("2024-01-01T00:00:00Z").tzinfo is UTC
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_utc("2024-01-01")
 
 
 class RangeClient(FakeClient):
@@ -355,3 +367,111 @@ def test_all_binance_sources_use_canonical_timestamp_and_legacy_delegates() -> N
     )
     assert result == [candle(0)]
     assert fake.calls == [(BASE, BASE + timedelta(hours=1))]
+
+
+def test_parser_accepts_exact_binance_1h_timestamps_and_preserves_milliseconds() -> None:
+    parsed = parse_binance_spot_1h_kline(kline(0))
+    assert parsed.open_time == BASE
+    assert parsed.close_time == BASE + timedelta(hours=1)
+
+
+@pytest.mark.parametrize(
+    "open_offset,close_offset",
+    [
+        (0, 300_000),
+        (0, 3_600_000),
+        (1, 3_599_999),
+        (0.0, 3_599_999),
+    ],
+)
+def test_parser_rejects_invalid_binance_1h_timestamps(
+    open_offset: float, close_offset: int
+) -> None:
+    invalid = kline(0)
+    invalid[0] = invalid[0] + open_offset
+    invalid[6] = int(BASE.timestamp() * 1000) + close_offset
+    with pytest.raises(BinanceKlineParseError):
+        parse_binance_spot_1h_kline(invalid)
+
+
+@pytest.mark.parametrize("value", [True, 1.0, "1.0", "01", -1])
+def test_millisecond_conversion_rejects_lossy_or_invalid_values(value: object) -> None:
+    with pytest.raises(BinanceKlineParseError):
+        datetime_from_milliseconds(value)
+
+
+def test_legacy_adapter_rejects_lossy_timestamp_before_fetch() -> None:
+    fake = FakeClient([])
+    with pytest.raises(BinanceKlineParseError):
+        asyncio.run(BinancePublicClient(fake).historical(1.0))  # type: ignore[arg-type]
+    assert fake.calls == []
+
+
+def test_historical_client_rejects_unaligned_range_before_request() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=[])
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            client(httpx.MockTransport(handler)).fetch_closed(
+                BASE + timedelta(minutes=1), BASE + timedelta(hours=1)
+            )
+        )
+    assert calls == 0
+
+
+def test_download_rejects_invalid_ranges_before_api_call(tmp_path: Path) -> None:
+    path = tmp_path / "btc.csv"
+    cases = [
+        (BASE + timedelta(minutes=30), BASE + timedelta(hours=2)),
+        (BASE, BASE + timedelta(hours=1, minutes=30)),
+        (datetime(2024, 1, 1), BASE + timedelta(hours=1)),
+        (BASE + timedelta(hours=1), BASE),
+    ]
+    for start, end in cases:
+        fake = FakeClient([])
+        with pytest.raises(ValueError):
+            asyncio.run(download_historical_csv(fake, start, end, path))
+        assert fake.calls == []
+
+
+def test_future_end_is_capped_at_last_closed_hour(tmp_path: Path) -> None:
+    path = tmp_path / "btc.csv"
+    fake = FakeClient([candle(0), candle(1)])
+    fake.now = lambda: BASE + timedelta(hours=2, minutes=37)
+    summary = asyncio.run(download_historical_csv(fake, BASE, BASE + timedelta(hours=5), path))
+    assert fake.calls == [(BASE, BASE + timedelta(hours=2))]
+    assert summary.effective_end == BASE + timedelta(hours=2)
+    assert summary.last_candle_close == BASE + timedelta(hours=2)
+
+
+def test_metadata_checksum_is_verified_and_missing_sidecar_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "btc.csv"
+    fake = FakeClient([candle(0), candle(1)])
+    asyncio.run(download_historical_csv(fake, BASE, BASE + timedelta(hours=2), path))
+    metadata_path = path.with_name(f"{path.name}.metadata.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["csv_sha256"] == csv_sha256(path)
+    assert main(["validate-data", "--input", str(path)]) == 0
+    metadata["csv_sha256"] = "0" * 64
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    assert main(["validate-data", "--input", str(path)]) == 1
+    metadata_path.unlink()
+    assert main(["validate-data", "--input", str(path)]) == 0
+    assert "metadata checksum sidecar is missing" in capsys.readouterr().err
+
+
+def test_incremental_noop_metadata_checksum_is_correct(tmp_path: Path) -> None:
+    path = tmp_path / "btc.csv"
+    write_candles_atomic(path, [candle(0), candle(1)])
+    fake = FakeClient([])
+    asyncio.run(download_historical_csv(fake, BASE, BASE + timedelta(hours=2), path))
+    metadata = json.loads((tmp_path / "btc.csv.metadata.json").read_text(encoding="utf-8"))
+    assert fake.calls == []
+    assert metadata["csv_sha256"] == csv_sha256(path)

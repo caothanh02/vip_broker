@@ -6,6 +6,7 @@ from typing import Any
 
 from trading_bot.domain.models import Candle
 
+INTERVAL_MS = 3_600_000
 _INTERVAL = timedelta(hours=1)
 
 
@@ -13,23 +14,46 @@ class BinanceKlineParseError(ValueError):
     pass
 
 
-def _timestamp(milliseconds: Any, field: str) -> datetime:
+def milliseconds_from_value(value: Any, field: str) -> int:
+    """Parse an exact non-negative integer millisecond timestamp."""
+    if isinstance(value, bool) or isinstance(value, float):
+        raise BinanceKlineParseError(f"invalid Binance {field} timestamp")
+    if isinstance(value, int):
+        milliseconds = value
+    elif isinstance(value, str):
+        try:
+            milliseconds = int(value)
+        except ValueError as exc:
+            raise BinanceKlineParseError(f"invalid Binance {field} timestamp") from exc
+        if str(milliseconds) != value:
+            raise BinanceKlineParseError(f"invalid Binance {field} timestamp")
+    else:
+        raise BinanceKlineParseError(f"invalid Binance {field} timestamp")
+    if milliseconds < 0:
+        raise BinanceKlineParseError(f"invalid Binance {field} timestamp")
+    return milliseconds
+
+
+def datetime_from_milliseconds(value: Any, field: str = "") -> datetime:
+    milliseconds = milliseconds_from_value(value, field or "")
     try:
-        value = int(milliseconds)
-        return datetime.fromtimestamp(value // 1000, UTC) + timedelta(milliseconds=value % 1000)
-    except (TypeError, ValueError, OSError) as exc:
-        raise BinanceKlineParseError(f"invalid Binance {field} timestamp") from exc
+        return datetime.fromtimestamp(milliseconds // 1000, UTC) + timedelta(
+            milliseconds=milliseconds % 1000
+        )
+    except (ValueError, OSError) as exc:
+        raise BinanceKlineParseError("invalid Binance timestamp") from exc
 
 
 def parse_binance_spot_1h_kline(row: Any) -> Candle:
     """Parse a REST kline into the domain's canonical half-open 1h candle."""
     if not isinstance(row, list) or len(row) < 7:
         raise BinanceKlineParseError("malformed Binance kline")
-    open_time = _timestamp(row[0], "open")
-    raw_close_time = _timestamp(row[6], "close")
+    open_ms = milliseconds_from_value(row[0], "open")
+    raw_close_ms = milliseconds_from_value(row[6], "close")
+    if open_ms % INTERVAL_MS or raw_close_ms != open_ms + INTERVAL_MS - 1:
+        raise BinanceKlineParseError("invalid Binance 1h kline timestamps")
+    open_time = datetime_from_milliseconds(open_ms)
     close_time = open_time + _INTERVAL
-    if raw_close_time < open_time or raw_close_time >= close_time:
-        raise BinanceKlineParseError("invalid Binance kline close timestamp")
     try:
         open_, high, low, close, volume = (Decimal(str(row[index])) for index in range(1, 6))
     except (InvalidOperation, ValueError) as exc:

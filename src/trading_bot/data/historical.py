@@ -7,12 +7,14 @@ from pathlib import Path
 from trading_bot.data.binance_historical import BinanceHistoricalDataClient
 from trading_bot.data.csv_store import (
     SCHEMA_VERSION,
+    csv_sha256,
     merge_candles,
     metadata_path,
     read_candles,
     write_candles_atomic,
     write_metadata_atomic,
 )
+from trading_bot.data.time_ranges import validate_hour_aligned_range
 from trading_bot.domain.models import Candle
 
 _INTERVAL = timedelta(hours=1)
@@ -44,6 +46,7 @@ async def download_historical_csv(
     overwrite: bool = False,
 ) -> DownloadSummary:
     """Download closed 1h candles and atomically maintain one normalized CSV."""
+    start, end = validate_hour_aligned_range(start, end)
     effective_end = _effective_end(client, end)
     if effective_end <= start:
         raise ValueError("no closed candles exist in the requested range")
@@ -73,6 +76,7 @@ async def download_historical_csv(
             "stored_last_candle_close": _iso(persisted[-1].close_time),
             "stored_candle_count": len(persisted),
             "requested_range_candle_count": _requested_count(start, effective_end),
+            "csv_sha256": csv_sha256(output),
             "downloaded_at": _iso(datetime.now(UTC)),
             "schema_version": SCHEMA_VERSION,
         },

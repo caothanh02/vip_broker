@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import tempfile
@@ -152,6 +153,31 @@ def write_candles_atomic(path: Path, candles: Iterable[Candle]) -> list[Candle]:
 
 def metadata_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.metadata.json")
+
+
+def csv_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise CsvDataError(f"could not checksum CSV: {path}") from exc
+    return digest.hexdigest()
+
+
+def verify_metadata_checksum(path: Path) -> bool:
+    sidecar = metadata_path(path)
+    if not sidecar.exists():
+        return False
+    try:
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CsvDataError("invalid metadata JSON") from exc
+    checksum = metadata.get("csv_sha256") if isinstance(metadata, dict) else None
+    if not isinstance(checksum, str) or checksum != csv_sha256(path):
+        raise CsvDataError("metadata CSV checksum mismatch")
+    return True
 
 
 def write_metadata_atomic(path: Path, metadata: dict[str, Any]) -> None:

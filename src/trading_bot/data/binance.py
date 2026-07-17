@@ -13,7 +13,10 @@ from trading_bot.data.binance_historical import (
     BinanceRateLimitError,
     BinanceResponseError,
 )
-from trading_bot.data.binance_parser import parse_binance_spot_1h_websocket_kline
+from trading_bot.data.binance_parser import (
+    datetime_from_milliseconds,
+    parse_binance_spot_1h_websocket_kline,
+)
 from trading_bot.domain.models import Candle
 
 __all__ = [
@@ -33,14 +36,12 @@ class BinancePublicClient:
     def __init__(self, historical_client: BinanceHistoricalDataClient | None = None) -> None:
         self._historical_client = historical_client or BinanceHistoricalDataClient()
 
-    async def historical(self, start_ms: int, end_ms: int | None = None) -> list[Candle]:
-        start = datetime.fromtimestamp(start_ms // 1000, UTC) + timedelta(
-            milliseconds=start_ms % 1000
-        )
+    async def historical(
+        self, start_ms: int | str, end_ms: int | str | None = None
+    ) -> list[Candle]:
+        start = datetime_from_milliseconds(start_ms, "start")
         end = (
-            datetime.fromtimestamp(end_ms // 1000, UTC)
-            + timedelta(milliseconds=end_ms % 1000)
-            + _MILLISECOND
+            datetime_from_milliseconds(end_ms, "end") + _MILLISECOND
             if end_ms is not None
             else datetime.now(UTC)
         )

@@ -12,7 +12,12 @@ from typing import Any
 
 from trading_bot.backtest.engine import CandleBacktester
 from trading_bot.data.binance_historical import BinanceDataError, BinanceHistoricalDataClient
-from trading_bot.data.csv_store import CsvDataError, read_candles, write_json_atomic
+from trading_bot.data.csv_store import (
+    CsvDataError,
+    read_candles,
+    verify_metadata_checksum,
+    write_json_atomic,
+)
 from trading_bot.data.historical import DataCoverageError, download_historical_csv, summary_json
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle, Trade
@@ -47,7 +52,7 @@ def parse_utc(value: str) -> datetime:
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"invalid UTC timestamp: {value}") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
+        raise argparse.ArgumentTypeError(f"UTC timestamp must include an offset: {value}")
     return parsed.astimezone(UTC)
 
 
@@ -165,6 +170,8 @@ def _download(args: argparse.Namespace, settings: BotSettings) -> None:
 
 def _validate(args: argparse.Namespace) -> None:
     candles = read_candles(args.input)
+    if not verify_metadata_checksum(args.input):
+        print("warning: metadata checksum sidecar is missing", file=sys.stderr)
     max_age = timedelta(hours=args.max_age_hours) if args.max_age_hours is not None else None
     validate_candles(candles, max_age=max_age)
     print(
