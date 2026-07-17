@@ -10,6 +10,10 @@ Safe, reproducible research, backtesting and paper-trading infrastructure for on
 
 Use Python 3.12 and [uv](https://docs.astral.sh/uv/): `uv sync --extra dev`, then `make format lint typecheck test`. Run the deterministic fixture backtest with `make backtest`. Use `make download-data` to invoke the public-data entry point; automated tests never make network calls.
 
+## Real historical data
+
+The public-only Binance Spot pipeline downloads closed `BTCUSDT` 1h candles, stores normalized UTC CSV without API keys, validates the result, and backtests it directly. See [docs/data.md](docs/data.md). Typical commands are `make download-data DATA_START=2024-01-01 DATA_END=2024-02-01`, `make validate-data`, and `make backtest-real`. Downloaded CSV and JSON reports are ignored by Git.
+
 ## ML workflow
 
 `make build-dataset` builds labels only at rule-based entry candidates. The triple barrier is entry at next open, 2×ATR stop, 4×ATR target and 48-candle limit. Timeouts are excluded from binary baseline training but must be reported. `make train`, `make evaluate`, and `make walk-forward` are chronological only: scaler/selection train-only and threshold validation-only. Model metadata records ordered features/schema/checksum.

@@ -10,7 +10,21 @@ from typing import Any, cast
 import httpx
 import websockets
 
+from trading_bot.data.binance_historical import (
+    BinanceDataError,
+    BinanceHistoricalDataClient,
+    BinanceRateLimitError,
+    BinanceResponseError,
+)
 from trading_bot.domain.models import Candle
+
+__all__ = [
+    "BinanceDataError",
+    "BinanceHistoricalDataClient",
+    "BinancePublicClient",
+    "BinanceRateLimitError",
+    "BinanceResponseError",
+]
 
 BINANCE_REST = "https://api.binance.com/api/v3"
 

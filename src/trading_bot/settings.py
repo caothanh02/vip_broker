@@ -21,6 +21,10 @@ class BotSettings(BaseSettings):
     live_trading_confirmation: str = ""
     binance_api_key: str = ""
     binance_api_secret: str = ""
+    binance_public_base_url: str = "https://api.binance.com/api/v3"
+    http_timeout_seconds: float = 20.0
+    http_max_retries: int = 3
+    data_file: str = "data/raw/btcusdt_1h.csv"
     database_url: str = "sqlite:///data/trading_bot.db"
     starting_cash: Decimal = Decimal("10000")
     entry_fee_rate: Decimal = Decimal("0.001")
@@ -60,4 +64,6 @@ def load_settings(path: Path = Path("config/base.yaml")) -> BotSettings:
         if isinstance(values, dict):
             for key, value in values.items():
                 flat["bot_mode" if section == "bot" and key == "mode" else key] = value
-    return BotSettings.model_validate(flat)
+    merged = BotSettings().model_dump()
+    merged.update(flat)
+    return BotSettings.model_validate(merged)
