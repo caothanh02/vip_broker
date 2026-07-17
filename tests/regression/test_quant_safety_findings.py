@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from math import isinf
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -300,6 +301,32 @@ def test_circuit_breaker_liquidates_at_next_open(monkeypatch: pytest.MonkeyPatch
     assert result.trades[0].exit_price == Decimal("79.9600")
 
 
+def test_gap_open_circuit_breaker_liquidates_at_same_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = BotSettings(
+        risk_per_trade=Decimal("1"),
+        max_exposure=Decimal("1"),
+        max_drawdown=Decimal("0.10"),
+        max_daily_loss=Decimal("0.50"),
+    )
+    backtester = CandleBacktester(settings)
+    _always_signal_once(backtester, monkeypatch)
+
+    result = backtester.run(
+        [
+            candle(0, "100", "95", "100"),
+            candle(1, "100", "95", "96"),
+            candle(2, "85", "85", "85"),
+        ]
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason == "circuit_breaker_emergency_liquidation"
+    assert result.trades[0].exit_time == datetime(2024, 1, 1, 2, tzinfo=UTC)
+    assert result.trades[0].exit_price == Decimal("84.9575")
+
+
 def test_unrealized_daily_equity_loss_opens_daily_breaker() -> None:
     settings = BotSettings(max_daily_loss=Decimal("0.03"))
     engine = RiskEngine(settings)
@@ -318,6 +345,55 @@ def test_unrealized_daily_equity_loss_opens_daily_breaker() -> None:
     assert engine.state.daily_pnl == Decimal("0")
     assert not decision.accepted
     assert decision.reason == "daily_loss_limit"
+
+
+def test_intrabar_loss_before_utc_midnight_counts_toward_daily_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = BotSettings(
+        risk_per_trade=Decimal("0.02"),
+        max_daily_loss=Decimal("0.01"),
+        max_drawdown=Decimal("0.50"),
+        consecutive_loss_limit=10,
+    )
+    backtester = CandleBacktester(settings)
+    _always_signal_once(backtester, monkeypatch)
+
+    result = backtester.run(
+        [
+            candle(22, "100", "95", "100"),
+            candle(23, "100", "80", "90"),
+            candle(24, "90", "90", "90"),
+        ]
+    )
+
+    jan_1 = datetime(2024, 1, 1, tzinfo=UTC).date()
+    jan_2 = datetime(2024, 1, 2, tzinfo=UTC).date()
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_time == datetime(2024, 1, 2, tzinfo=UTC)
+    assert backtester.risk.state.last_daily_loss_breach_date == jan_1
+    assert backtester.risk.state.daily_pnl_date == jan_2
+    assert not backtester.risk.state.daily_loss_open
+    assert backtester.risk.state.daily_pnl == Decimal("0")
+
+    accounting = RiskEngine(settings)
+    accounting.mark_to_market(datetime(2024, 1, 1, 23, tzinfo=UTC), Decimal("10000"))
+    accounting.record_closed_trade(
+        datetime(2024, 1, 1, 23, tzinfo=UTC), Decimal("-200"), Decimal("9800")
+    )
+    assert accounting.state.daily_loss_open
+    assert accounting.state.last_daily_loss_breach_date == jan_1
+    accounting.mark_to_market(datetime(2024, 1, 2, tzinfo=UTC), Decimal("9800"))
+    assert not accounting.state.daily_loss_open
+    reset_decision = accounting.decide(
+        datetime(2024, 1, 2, 1, tzinfo=UTC),
+        Decimal("9800"),
+        Decimal("9800"),
+        Decimal("100"),
+        Decimal("10"),
+        False,
+    )
+    assert reset_decision.accepted
 
 
 def test_profit_factor_without_losses_is_infinite() -> None:
@@ -377,3 +453,27 @@ def test_validation_rejects_naive_and_non_utc_timestamps(opened: datetime) -> No
     )
     with pytest.raises(ValueError, match="timestamp"):
         validate_candles([invalid])
+
+
+@pytest.mark.parametrize(
+    "opened",
+    [
+        datetime(2024, 1, 1, tzinfo=UTC),
+        datetime(2024, 1, 1, tzinfo=timezone(timedelta(0), name="UTC")),
+        datetime(2024, 1, 1, tzinfo=ZoneInfo("UTC")),
+    ],
+)
+def test_validation_accepts_zero_offset_utc_timezones(opened: datetime) -> None:
+    valid = Candle(
+        opened,
+        opened + timedelta(hours=1),
+        "BTC/USDT",
+        "1h",
+        Decimal("100"),
+        Decimal("101"),
+        Decimal("99"),
+        Decimal("100"),
+        Decimal("1000"),
+        True,
+    )
+    validate_candles([valid])

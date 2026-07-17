@@ -18,7 +18,15 @@ def validate_candles(candles: list[Candle], max_age: timedelta | None = None) ->
     for candle in candles:
         if candle.open_time.tzinfo is None or candle.close_time.tzinfo is None:
             raise CandleValidationError("naive timestamp")
-        if candle.open_time.tzinfo is not UTC or candle.close_time.tzinfo is not UTC:
+        open_offset = candle.open_time.utcoffset()
+        close_offset = candle.close_time.utcoffset()
+        if (
+            open_offset is None
+            or close_offset is None
+            or open_offset != timedelta(0)
+            or close_offset != timedelta(0)
+            or open_offset != close_offset
+        ):
             raise CandleValidationError("timestamp must be UTC")
         if candle.symbol != "BTC/USDT" or candle.timeframe != "1h":
             raise CandleValidationError("unsupported market")

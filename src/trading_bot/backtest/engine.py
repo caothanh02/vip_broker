@@ -112,6 +112,7 @@ class CandleBacktester:
         timestamp: datetime,
         reason: str,
         cash: Decimal,
+        risk_timestamp: datetime | None = None,
     ) -> tuple[Decimal, Trade]:
         fill = self.broker.place_order(
             OrderRequest(
@@ -141,7 +142,7 @@ class CandleBacktester:
         result.trades.append(trade)
         result.total_fees += fill.fee
         result.total_slippage += fill.slippage
-        self.risk.record_closed_trade(timestamp, pnl, cash)
+        self.risk.record_closed_trade(risk_timestamp or timestamp, pnl, cash)
         return cash, trade
 
     def run(self, candles: list[Candle]) -> BacktestResult:
@@ -158,8 +159,6 @@ class CandleBacktester:
             exit_to_fill = pending_exit
             pending_exit = None
             self.risk.mark_to_market(candle.open_time, opening_equity)
-            if position is not None and self.risk.state.circuit_open and exit_to_fill is None:
-                pending_exit = "circuit_breaker_emergency_liquidation"
             if exit_to_fill is not None and position is not None:
                 cash, _ = self._close_position(
                     result,
@@ -167,6 +166,18 @@ class CandleBacktester:
                     candle.open,
                     candle.open_time,
                     exit_to_fill,
+                    cash,
+                )
+                position = None
+            elif position is not None and self.risk.state.circuit_open:
+                # A drawdown discovered from the known opening price is an
+                # emergency: liquidate now, before this candle's intrabar path.
+                cash, _ = self._close_position(
+                    result,
+                    position,
+                    candle.open,
+                    candle.open_time,
+                    "circuit_breaker_emergency_liquidation",
                     cash,
                 )
                 position = None
@@ -225,6 +236,7 @@ class CandleBacktester:
                         exit_time,
                         "stop_loss_or_trailing",
                         cash,
+                        candle.open_time,
                     )
                     position = None
                 else:

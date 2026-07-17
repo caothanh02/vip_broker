@@ -15,6 +15,7 @@ class RiskState:
     daily_pnl: Decimal = Decimal("0")
     daily_pnl_date: date | None = None
     daily_loss_open: bool = False
+    last_daily_loss_breach_date: date | None = None
     consecutive_losses: int = 0
     cooldown_until: datetime | None = None
     circuit_open: bool = False
@@ -36,12 +37,16 @@ class RiskEngine:
             self.state.daily_pnl_date = today
             self.state.daily_loss_open = False
 
+    def _mark_daily_loss_if_needed(self, equity: Decimal) -> None:
+        if equity <= self.state.day_start_equity * (1 - self.settings.max_daily_loss):
+            self.state.daily_loss_open = True
+            self.state.last_daily_loss_breach_date = self.state.daily_pnl_date
+
     def mark_to_market(self, now: datetime, equity: Decimal) -> None:
         """Record candle-close equity before considering a subsequent entry."""
         self._reset_daily_state_if_needed(now, equity)
         self.state.peak_equity = max(self.state.peak_equity, equity)
-        if equity <= self.state.day_start_equity * (1 - self.settings.max_daily_loss):
-            self.state.daily_loss_open = True
+        self._mark_daily_loss_if_needed(equity)
         if equity <= self.state.peak_equity * (1 - self.settings.max_drawdown):
             self.state.circuit_open = True
 
@@ -72,7 +77,7 @@ class RiskEngine:
         if self.state.daily_loss_open or equity <= self.state.day_start_equity * (
             1 - self.settings.max_daily_loss
         ):
-            self.state.daily_loss_open = True
+            self._mark_daily_loss_if_needed(equity)
             return RiskDecision(False, "daily_loss_limit")
         if equity <= self.state.peak_equity * (1 - self.settings.max_drawdown):
             self.state.circuit_open = True
@@ -113,6 +118,7 @@ class RiskEngine:
         self._reset_daily_state_if_needed(now, equity)
         self.state.peak_equity = max(self.state.peak_equity, equity)
         self.state.daily_pnl += pnl
+        self._mark_daily_loss_if_needed(equity)
         self.state.consecutive_losses = self.state.consecutive_losses + 1 if pnl < 0 else 0
         if self.state.consecutive_losses >= self.settings.consecutive_loss_limit:
             self.state.cooldown_until = now + timedelta(hours=self.settings.cooldown_hours)
