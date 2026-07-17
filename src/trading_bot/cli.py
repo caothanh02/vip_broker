@@ -13,7 +13,7 @@ from typing import Any
 from trading_bot.backtest.engine import CandleBacktester
 from trading_bot.data.binance_historical import BinanceDataError, BinanceHistoricalDataClient
 from trading_bot.data.csv_store import CsvDataError, read_candles, write_json_atomic
-from trading_bot.data.historical import download_historical_csv, summary_json
+from trading_bot.data.historical import DataCoverageError, download_historical_csv, summary_json
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle, Trade
 from trading_bot.settings import BotSettings, load_settings
@@ -66,12 +66,48 @@ def _trade_json(trade: Trade) -> dict[str, str]:
 
 
 def _settings_snapshot(settings: BotSettings) -> dict[str, Any]:
-    excluded = {"binance_api_key", "binance_api_secret", "live_trading_confirmation"}
-    return {
-        key: str(value) if isinstance(value, Decimal) else value
-        for key, value in settings.model_dump().items()
-        if key not in excluded
-    }
+    allowed = (
+        "symbol",
+        "timeframe",
+        "starting_cash",
+        "entry_fee_rate",
+        "exit_fee_rate",
+        "entry_slippage_rate",
+        "exit_slippage_rate",
+        "risk_per_trade",
+        "max_exposure",
+        "max_daily_loss",
+        "max_drawdown",
+        "consecutive_loss_limit",
+        "cooldown_hours",
+        "min_notional",
+        "quantity_step",
+        "ema_fast",
+        "ema_slow",
+        "ema_trend",
+        "volume_window",
+        "volume_multiplier",
+        "atr_window",
+        "stop_atr_multiple",
+        "trailing_atr_multiple",
+        "ml_filter_enabled",
+        "model_version",
+    )
+    snapshot = {key: _setting_value(getattr(settings, key)) for key in allowed}
+    if any(_is_sensitive_setting_name(key) for key in snapshot):
+        raise RuntimeError("unsafe setting requested for backtest report")
+    return snapshot
+
+
+def _setting_value(value: Any) -> Any:
+    return str(value) if isinstance(value, Decimal) else value
+
+
+def _is_sensitive_setting_name(key: str) -> bool:
+    return any(
+        fragment in key.lower()
+        for fragment in ("secret", "password", "token", "api_key", "credential")
+    )
 
 
 def _json_safe(value: Any) -> Any:
@@ -182,7 +218,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(f"{args.command}: no live activity performed.")
-    except (BinanceDataError, CandleValidationError, CsvDataError, ValueError) as exc:
+    except (
+        BinanceDataError,
+        CandleValidationError,
+        CsvDataError,
+        DataCoverageError,
+        ValueError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0

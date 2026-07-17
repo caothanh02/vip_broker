@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
 
+from trading_bot.data.binance_parser import BinanceKlineParseError, parse_binance_spot_1h_kline
 from trading_bot.domain.models import Candle
 
 BINANCE_REST = "https://api.binance.com/api/v3"
@@ -145,30 +145,7 @@ class BinanceHistoricalDataClient:
 
     @staticmethod
     def _parse_kline(row: Any) -> Candle:
-        if not isinstance(row, list) or len(row) < 7:
-            raise BinanceResponseError("malformed Binance kline")
         try:
-            open_ms = int(row[0])
-            raw_close_ms = int(row[6])
-            open_time = datetime.fromtimestamp(open_ms / 1000, UTC)
-        except (TypeError, ValueError, OSError) as exc:
-            raise BinanceResponseError("invalid Binance kline timestamp") from exc
-        close_time = open_time + _INTERVAL
-        if raw_close_ms < open_ms or raw_close_ms >= int(close_time.timestamp() * 1000):
-            raise BinanceResponseError("invalid Binance kline close timestamp")
-        try:
-            open_, high, low, close, volume = (Decimal(str(row[index])) for index in range(1, 6))
-        except (InvalidOperation, ValueError) as exc:
-            raise BinanceResponseError("invalid Binance kline decimal") from exc
-        return Candle(
-            open_time=open_time,
-            close_time=close_time,
-            symbol="BTC/USDT",
-            timeframe="1h",
-            open=open_,
-            high=high,
-            low=low,
-            close=close,
-            volume=volume,
-            is_closed=True,
-        )
+            return parse_binance_spot_1h_kline(row)
+        except BinanceKlineParseError as exc:
+            raise BinanceResponseError(str(exc)) from exc

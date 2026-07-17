@@ -10,11 +10,17 @@ from typing import Any
 import httpx
 import pytest
 
-from trading_bot.cli import main, parse_utc
+from trading_bot.cli import _settings_snapshot, main, parse_utc
+from trading_bot.data.binance import BinancePublicClient
 from trading_bot.data.binance_historical import (
     BinanceHistoricalDataClient,
     BinanceRateLimitError,
     BinanceResponseError,
+)
+from trading_bot.data.binance_parser import (
+    BinanceKlineParseError,
+    parse_binance_spot_1h_kline,
+    parse_binance_spot_1h_websocket_kline,
 )
 from trading_bot.data.csv_store import (
     CsvDataError,
@@ -22,8 +28,9 @@ from trading_bot.data.csv_store import (
     read_candles,
     write_candles_atomic,
 )
-from trading_bot.data.historical import download_historical_csv
+from trading_bot.data.historical import DataCoverageError, download_historical_csv
 from trading_bot.domain.models import Candle
+from trading_bot.settings import BotSettings
 
 BASE = datetime(2024, 1, 1, tzinfo=UTC)
 
@@ -183,6 +190,7 @@ class FakeClient:
     def __init__(self, response: list[Candle]) -> None:
         self.response = response
         self.calls: list[tuple[datetime, datetime]] = []
+        self.now = lambda: BASE + timedelta(days=30)
 
     async def fetch_closed(self, start: datetime, end: datetime) -> list[Candle]:
         self.calls.append((start, end))
@@ -198,7 +206,7 @@ def test_incremental_download_merges_and_skips_complete_range(tmp_path: Path) ->
     assert summary.old_candles == 2 and summary.new_candles == 1
     assert len(read_candles(path)) == 3
     metadata = json.loads((tmp_path / "btc.csv.metadata.json").read_text(encoding="utf-8"))
-    assert metadata["candle_count"] == 3
+    assert metadata["stored_candle_count"] == 3
     complete = FakeClient([])
     asyncio.run(download_historical_csv(complete, BASE, BASE + timedelta(hours=3), path))
     assert complete.calls == []
@@ -230,3 +238,120 @@ def test_cli_backtests_csv_and_writes_report(tmp_path: Path) -> None:
     assert payload["candle_count"] == 240
     assert main(["validate-data", "--input", str(tmp_path / "missing.csv")]) == 1
     assert parse_utc("2024-01-01").tzinfo is UTC
+
+
+class RangeClient(FakeClient):
+    def __init__(self, responses: dict[tuple[datetime, datetime], list[Candle]]) -> None:
+        super().__init__([])
+        self.responses = responses
+
+    async def fetch_closed(self, start: datetime, end: datetime) -> list[Candle]:
+        self.calls.append((start, end))
+        return self.responses[(start, end)]
+
+
+def test_incremental_backfills_missing_requested_prefix(tmp_path: Path) -> None:
+    path = tmp_path / "btc.csv"
+    write_candles_atomic(path, [candle(2), candle(3)])
+    fake = RangeClient(
+        {
+            (BASE, BASE + timedelta(hours=2)): [candle(0), candle(1)],
+            (BASE + timedelta(hours=4), BASE + timedelta(hours=5)): [candle(4)],
+        }
+    )
+    summary = asyncio.run(download_historical_csv(fake, BASE, BASE + timedelta(hours=5), path))
+    assert fake.calls == [
+        (BASE, BASE + timedelta(hours=2)),
+        (BASE + timedelta(hours=4), BASE + timedelta(hours=5)),
+    ]
+    assert summary.requested_range_candle_count == 5
+    assert [item.open_time for item in read_candles(path)] == [
+        BASE + timedelta(hours=index) for index in range(5)
+    ]
+
+
+def test_incremental_existing_file_covers_requested_range_without_api_call(tmp_path: Path) -> None:
+    path = tmp_path / "btc.csv"
+    write_candles_atomic(path, [candle(index) for index in range(5)])
+    fake = FakeClient([])
+    summary = asyncio.run(
+        download_historical_csv(fake, BASE + timedelta(hours=1), BASE + timedelta(hours=4), path)
+    )
+    assert fake.calls == []
+    assert summary.old_candles == 5 and summary.new_candles == 0
+    assert summary.requested_range_candle_count == 3
+
+
+def test_incremental_partial_response_does_not_replace_existing_file(tmp_path: Path) -> None:
+    path = tmp_path / "btc.csv"
+    write_candles_atomic(path, [candle(0), candle(1)])
+    original = path.read_text(encoding="utf-8")
+    with pytest.raises(DataCoverageError):
+        asyncio.run(
+            download_historical_csv(FakeClient([candle(2)]), BASE, BASE + timedelta(hours=4), path)
+        )
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_incremental_existing_gap_fails_before_api_call(tmp_path: Path) -> None:
+    path = tmp_path / "btc.csv"
+    write_candles_atomic(path, [candle(0), candle(1), candle(2)])
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join([lines[0], lines[1], lines[3]]) + "\n", encoding="utf-8")
+    fake = FakeClient([])
+    with pytest.raises(CsvDataError):
+        asyncio.run(download_historical_csv(fake, BASE, BASE + timedelta(hours=3), path))
+    assert fake.calls == []
+
+
+def test_settings_snapshot_and_backtest_report_exclude_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = BotSettings(
+        database_url="postgresql://alice:super-secret@db.example.com/trading",
+        binance_api_key="test-api-key",
+        binance_api_secret="test-api-secret",
+        live_trading_confirmation="unsafe-value",
+    )
+    snapshot = _settings_snapshot(settings)
+    assert "database_url" not in snapshot
+    assert {"binance_api_key", "binance_api_secret", "live_trading_confirmation"}.isdisjoint(
+        snapshot
+    )
+    monkeypatch.setattr("trading_bot.cli.load_settings", lambda: settings)
+    report = tmp_path / "report.json"
+    assert main(["backtest", "--fixture", "--output", str(report)]) == 0
+    raw = report.read_text(encoding="utf-8")
+    for secret in ("super-secret", "test-api-key", "test-api-secret", "unsafe-value", "alice"):
+        assert secret not in raw
+
+
+def test_all_binance_sources_use_canonical_timestamp_and_legacy_delegates() -> None:
+    parsed = parse_binance_spot_1h_kline(kline(0, "100.123456789"))
+    websocket = parse_binance_spot_1h_websocket_kline(
+        {
+            "t": kline(0)[0],
+            "T": kline(0)[6],
+            "o": "100.123456789",
+            "h": "101",
+            "l": "99",
+            "c": "100.123456789",
+            "v": "1.234567890123456789",
+        }
+    )
+    assert parsed.close_time - parsed.open_time == timedelta(hours=1)
+    assert websocket.close_time - websocket.open_time == timedelta(hours=1)
+    assert parsed.open == Decimal("100.123456789")
+    invalid = kline(0)
+    invalid[6] = invalid[0] + 3_600_000
+    with pytest.raises(BinanceKlineParseError):
+        parse_binance_spot_1h_kline(invalid)
+
+    fake = FakeClient([candle(0)])
+    result = asyncio.run(
+        BinancePublicClient(fake).historical(
+            int(BASE.timestamp() * 1000), int((BASE + timedelta(hours=1)).timestamp() * 1000) - 1
+        )
+    )
+    assert result == [candle(0)]
+    assert fake.calls == [(BASE, BASE + timedelta(hours=1))]
