@@ -54,16 +54,23 @@ def _parse_row(row: dict[str, str]) -> Candle:
         raise CsvDataError("CSV schema does not match expected candle columns")
     try:
         is_closed = {"true": True, "false": False}[row["is_closed"].lower()]
+        open_ = Decimal(row["open"])
+        high = Decimal(row["high"])
+        low = Decimal(row["low"])
+        close = Decimal(row["close"])
+        volume = Decimal(row["volume"])
+        if not all(value.is_finite() for value in (open_, high, low, close, volume)):
+            raise ValueError("non-finite decimal")
         return Candle(
             open_time=_parse_time(row["open_time"], "open_time"),
             close_time=_parse_time(row["close_time"], "close_time"),
             symbol=row["symbol"],
             timeframe=row["timeframe"],
-            open=Decimal(row["open"]),
-            high=Decimal(row["high"]),
-            low=Decimal(row["low"]),
-            close=Decimal(row["close"]),
-            volume=Decimal(row["volume"]),
+            open=open_,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume,
             is_closed=is_closed,
         )
     except (KeyError, InvalidOperation, ValueError) as exc:

@@ -2,7 +2,7 @@
 
 The historical pipeline downloads Binance **Spot** public `BTCUSDT` 1-hour klines. It never sends an authenticated request, does not need an API key, and does not enable live trading. `BTCUSDT` is the exchange symbol; the domain model uses `BTC/USDT`.
 
-All ranges are UTC and half-open: `[start, end)`. Binance reports the raw close timestamp at the final millisecond of the interval. The downloader canonicalizes it to `open_time + 1 hour`, so every stored candle represents `[open_time, close_time)` and remains compatible with validation.
+All ranges are UTC and half-open: `[start, end)`. Date-only inputs such as `2024-01-01` mean UTC midnight (`2024-01-01T00:00:00Z`). Datetime inputs with a time must include a timezone offset; naive datetimes are rejected. Binance reports the raw close timestamp at the final millisecond of the interval. The downloader canonicalizes it to `open_time + 1 hour`, so every stored candle represents `[open_time, close_time)` and remains compatible with validation.
 
 Only closed candles are stored. The CSV uses Decimal strings for OHLCV, is written atomically with a metadata sidecar, and is ignored by Git.
 

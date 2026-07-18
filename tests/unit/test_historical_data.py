@@ -32,6 +32,7 @@ from trading_bot.data.csv_store import (
     write_candles_atomic,
 )
 from trading_bot.data.historical import DataCoverageError, download_historical_csv
+from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle
 from trading_bot.settings import BotSettings
 
@@ -247,9 +248,48 @@ def test_cli_backtests_csv_and_writes_report(tmp_path: Path) -> None:
     assert payload["input_file"] == str(data)
     assert payload["candle_count"] == 240
     assert main(["validate-data", "--input", str(tmp_path / "missing.csv")]) == 1
-    assert parse_utc("2024-01-01T00:00:00Z").tzinfo is UTC
+
+
+def test_cli_accepts_date_only_as_utc_midnight() -> None:
+    assert parse_utc("2024-01-01") == datetime(2024, 1, 1, tzinfo=UTC)
+
+
+def test_cli_accepts_z_timestamp() -> None:
+    assert parse_utc("2024-01-01T00:00:00Z") == datetime(2024, 1, 1, tzinfo=UTC)
+
+
+def test_cli_accepts_offset_timestamp_and_normalizes_to_utc() -> None:
+    assert parse_utc("2024-01-01T07:00:00+07:00") == datetime(2024, 1, 1, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("value", ["2024-01-01T12:00:00", "2024-01-01 12:00:00"])
+def test_cli_rejects_naive_datetime_with_time(value: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError, match="timezone offset"):
+        parse_utc(value)
+
+
+@pytest.mark.parametrize(
+    "value", ["2024/01/01", "01-01-2024", "", "not-a-date", "2024-02-30", "2024-01-01T00:00:00UTC"]
+)
+def test_cli_rejects_invalid_date_formats(value: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError):
-        parse_utc("2024-01-01")
+        parse_utc(value)
+
+
+def test_makefile_default_date_format_is_supported() -> None:
+    makefile = (Path(__file__).parents[2] / "Makefile").read_text(encoding="utf-8")
+    start = next(
+        line.split("?=", maxsplit=1)[1].strip()
+        for line in makefile.splitlines()
+        if line.startswith("DATA_START")
+    )
+    end = next(
+        line.split("?=", maxsplit=1)[1].strip()
+        for line in makefile.splitlines()
+        if line.startswith("DATA_END")
+    )
+    assert parse_utc(start) == datetime(2024, 1, 1, tzinfo=UTC)
+    assert parse_utc(end) == datetime(2024, 2, 1, tzinfo=UTC)
 
 
 class RangeClient(FakeClient):
@@ -475,3 +515,42 @@ def test_incremental_noop_metadata_checksum_is_correct(tmp_path: Path) -> None:
     metadata = json.loads((tmp_path / "btc.csv.metadata.json").read_text(encoding="utf-8"))
     assert fake.calls == []
     assert metadata["csv_sha256"] == csv_sha256(path)
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "Infinity", "-Infinity"])
+def test_data_validation_rejects_nonfinite_decimals(value: str) -> None:
+    invalid = candle(0)
+    invalid = Candle(
+        invalid.open_time,
+        invalid.close_time,
+        invalid.symbol,
+        invalid.timeframe,
+        Decimal(value),
+        invalid.high,
+        invalid.low,
+        invalid.close,
+        invalid.volume,
+        invalid.is_closed,
+    )
+    with pytest.raises(CandleValidationError, match="non-finite"):
+        validate_candles([invalid])
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "Infinity", "-Infinity"])
+def test_binance_parser_rejects_nonfinite_decimals(value: str) -> None:
+    invalid = kline(0)
+    invalid[1] = value
+    with pytest.raises(BinanceKlineParseError, match="non-finite"):
+        parse_binance_spot_1h_kline(invalid)
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "Infinity", "-Infinity"])
+def test_csv_reader_rejects_nonfinite_decimals(tmp_path: Path, value: str) -> None:
+    path = tmp_path / "btc.csv"
+    path.write_text(
+        "open_time,close_time,symbol,timeframe,open,high,low,close,volume,is_closed\n"
+        f"2024-01-01T00:00:00Z,2024-01-01T01:00:00Z,BTC/USDT,1h,{value},101,99,100,1,true\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CsvDataError, match="malformed"):
+        read_candles(path)

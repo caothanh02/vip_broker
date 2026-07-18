@@ -34,6 +34,11 @@ def validate_candles(candles: list[Candle], max_age: timedelta | None = None) ->
             raise CandleValidationError("open candle")
         if candle.open_time in seen:
             raise CandleValidationError("duplicate timestamp")
+        if not all(
+            value.is_finite()
+            for value in (candle.open, candle.high, candle.low, candle.close, candle.volume)
+        ):
+            raise CandleValidationError("non-finite OHLCV")
         if min(candle.open, candle.high, candle.low, candle.close) <= 0 or candle.volume < 0:
             raise CandleValidationError("invalid OHLCV")
         if candle.close_time - candle.open_time != interval:

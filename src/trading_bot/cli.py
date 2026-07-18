@@ -4,8 +4,9 @@ import argparse
 import asyncio
 import json
 import math
+import re
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,8 @@ from trading_bot.data.historical import DataCoverageError, download_historical_c
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle, Trade
 from trading_bot.settings import BotSettings, load_settings
+
+_DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 
 
 def fixture() -> list[Candle]:
@@ -47,12 +50,17 @@ def fixture() -> list[Candle]:
 
 
 def parse_utc(value: str) -> datetime:
+    if _DATE_ONLY.fullmatch(value):
+        try:
+            return datetime.combine(date.fromisoformat(value), time.min, tzinfo=UTC)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"invalid UTC date: {value}") from exc
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(f"{value[:-1]}+00:00" if value.endswith("Z") else value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"invalid UTC timestamp: {value}") from exc
-    if parsed.tzinfo is None:
-        raise argparse.ArgumentTypeError(f"UTC timestamp must include an offset: {value}")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise argparse.ArgumentTypeError(f"timestamp must include a timezone offset: {value}")
     return parsed.astimezone(UTC)
 
 

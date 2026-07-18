@@ -58,6 +58,8 @@ def parse_binance_spot_1h_kline(row: Any) -> Candle:
         open_, high, low, close, volume = (Decimal(str(row[index])) for index in range(1, 6))
     except (InvalidOperation, ValueError) as exc:
         raise BinanceKlineParseError("invalid Binance kline decimal") from exc
+    if not all(value.is_finite() for value in (open_, high, low, close, volume)):
+        raise BinanceKlineParseError("non-finite Binance kline decimal")
     return Candle(open_time, close_time, "BTC/USDT", "1h", open_, high, low, close, volume, True)
 
 
