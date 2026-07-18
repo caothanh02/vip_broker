@@ -1,4 +1,8 @@
-.PHONY: install format lint typecheck test download-data validate-data backtest build-dataset train evaluate walk-forward dry-run report
+.PHONY: install format lint typecheck test download-data validate-data backtest backtest-real build-dataset train evaluate walk-forward dry-run report
+DATA_START ?= 2024-01-01
+DATA_END ?= 2024-02-01
+DATA_FILE ?= data/raw/btcusdt_1h.csv
+REPORT_FILE ?= reports/backtests/btcusdt_1h_baseline.json
 install:
 	uv sync --extra dev
 format:
@@ -10,11 +14,13 @@ typecheck:
 test:
 	uv run pytest
 download-data:
-	uv run trading-bot download-data
+	uv run trading-bot download-data --start $(DATA_START) --end $(DATA_END) --output $(DATA_FILE)
 validate-data:
-	uv run trading-bot validate-data
+	uv run trading-bot validate-data --input $(DATA_FILE)
 backtest:
-	uv run trading-bot backtest
+	uv run trading-bot backtest --fixture --output reports/backtests/fixture.json
+backtest-real:
+	uv run trading-bot backtest --input $(DATA_FILE) --output $(REPORT_FILE)
 build-dataset:
 	uv run trading-bot build-dataset
 train:
