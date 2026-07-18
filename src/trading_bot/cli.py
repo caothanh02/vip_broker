@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from trading_bot.backtest.engine import CandleBacktester
+from trading_bot.charting.market_chart import ChartError, build_market_chart, open_market_chart
 from trading_bot.data.binance_historical import BinanceDataError, BinanceHistoricalDataClient
 from trading_bot.data.csv_store import (
     CsvDataError,
@@ -146,6 +147,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subcommands.add_parser("validate-data")
     validate.add_argument("--input", type=Path, required=True)
     validate.add_argument("--max-age-hours", type=float)
+    chart = subcommands.add_parser("chart-data")
+    chart.add_argument("--input", type=Path, required=True)
+    chart.add_argument("--output", type=Path, required=True)
+    chart.add_argument("--title")
+    chart.add_argument("--open", dest="open_browser", action="store_true")
     backtest = subcommands.add_parser("backtest")
     source = backtest.add_mutually_exclusive_group(required=True)
     source.add_argument("--input", type=Path)
@@ -216,6 +222,17 @@ def _backtest(args: argparse.Namespace, settings: BotSettings) -> None:
     print(json.dumps({"output": str(args.output), "metrics": result.metrics()}, indent=2))
 
 
+def _chart(args: argparse.Namespace) -> None:
+    candles = read_candles(args.input)
+    if not verify_metadata_checksum(args.input):
+        print("warning: metadata checksum sidecar is missing", file=sys.stderr)
+    validate_candles(candles)
+    summary = build_market_chart(candles, args.output, title=args.title)
+    if args.open_browser:
+        open_market_chart(args.output)
+    print(json.dumps(summary.as_dict(), indent=2))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -227,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
             _validate(args)
         elif args.command == "backtest":
             _backtest(args, settings)
+        elif args.command == "chart-data":
+            _chart(args)
         elif args.command == "dry-run":
             print(
                 "Dry-run safety check complete: paper broker only; no exchange orders can be sent."
@@ -236,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         BinanceDataError,
         CandleValidationError,
+        ChartError,
         CsvDataError,
         DataCoverageError,
         ValueError,

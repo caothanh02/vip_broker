@@ -9,8 +9,11 @@ Only closed candles are stored. The CSV uses Decimal strings for OHLCV, is writt
 ```powershell
 trading-bot download-data --start 2024-01-01 --end 2024-02-01 --output data/raw/btcusdt_1h.csv
 trading-bot validate-data --input data/raw/btcusdt_1h.csv --max-age-hours 48
+trading-bot chart-data --input data/raw/btcusdt_1h.csv --output reports/charts/btcusdt_1h.html --open
 trading-bot backtest --input data/raw/btcusdt_1h.csv --output reports/backtests/btcusdt_1h_baseline.json
 ```
+
+`chart-data` verifies the CSV and metadata checksum before generating a self-contained Plotly candlestick and volume chart. It opens the local HTML only when `--open` is supplied; the chart does not contact Binance or submit orders.
 
 Running `download-data` again with the same output continues at the candle after the existing final candle. Use `--overwrite` only to replace the requested range after a successful validated download. The downloader retries bounded HTTP 429 and 5xx failures; malformed data, pagination stalls, duplicates, gaps, and CSV conflicts fail clearly without replacing an existing file.
 

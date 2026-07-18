@@ -17,6 +17,7 @@ models/*.pkl
 models/*.json
 !models/README.md
 reports/backtests/*
+reports/charts/*
 reports/ml/*
 reports/dry_run/*
 reports/*.json
