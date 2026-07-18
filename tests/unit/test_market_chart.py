@@ -63,6 +63,10 @@ def test_build_market_chart_writes_self_contained_interactive_html(tmp_path: Pat
     assert "candlestick" in content.lower()
     assert "plotly.js v" in content
     assert '"Entry"' in content and '"Exit"' in content
+    assert '"dragmode":"pan"' in content
+    assert '"scrollZoom": true' in content
+    assert '"displayModeBar": true' in content
+    assert '"modeBarButtonsToAdd": ["pan2d"]' in content
 
 
 def test_chart_requires_html_output_and_existing_file_to_open(tmp_path: Path) -> None:

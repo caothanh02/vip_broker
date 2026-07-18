@@ -49,7 +49,13 @@ def build_market_chart(
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.write_html(
         str(output),
-        config={"displaylogo": False, "responsive": True},
+        config={
+            "scrollZoom": True,
+            "displayModeBar": True,
+            "displaylogo": False,
+            "responsive": True,
+            "modeBarButtonsToAdd": ["pan2d"],
+        },
         full_html=True,
         include_plotlyjs=True,
     )
@@ -128,6 +134,7 @@ def _figure(candles: list[Candle], trades: list[Trade], title: str | None) -> go
         )
     figure.update_layout(
         title=title or "BTC/USDT Spot 1h",
+        dragmode="pan",
         xaxis_rangeslider_visible=False,
         hovermode="x unified",
         template="plotly_white",

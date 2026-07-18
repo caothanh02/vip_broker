@@ -13,7 +13,7 @@ trading-bot chart-data --input data/raw/btcusdt_1h.csv --output reports/charts/b
 trading-bot backtest --input data/raw/btcusdt_1h.csv --output reports/backtests/btcusdt_1h_baseline.json
 ```
 
-`chart-data` verifies the CSV and metadata checksum before generating a self-contained Plotly candlestick and volume chart. It opens the local HTML only when `--open` is supplied; the chart does not contact Binance or submit orders.
+`chart-data` verifies the CSV and metadata checksum before generating a self-contained Plotly candlestick and volume chart. It starts in pan mode; use the mouse wheel to zoom and the mode bar for pan, zoom, autoscale, reset, or PNG export. It opens the local HTML only when `--open` is supplied; the chart does not contact Binance or submit orders.
 
 Running `download-data` again with the same output continues at the candle after the existing final candle. Use `--overwrite` only to replace the requested range after a successful validated download. The downloader retries bounded HTTP 429 and 5xx failures; malformed data, pagination stalls, duplicates, gaps, and CSV conflicts fail clearly without replacing an existing file.
 
