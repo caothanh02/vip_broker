@@ -91,14 +91,17 @@ def _publish_vision_generation(
     parsed = getattr(client, "parsed", None)
     if not isinstance(parsed, list):
         raise TypeError("Binance Vision publisher requires archive audit records")
-    report = anomaly_report(parsed)
+    verification_mode = getattr(client, "checksum_verification_mode", "official_online")
+    if verification_mode not in {"official_online", "cached_offline"}:
+        raise DataCoverageError("invalid checksum verification mode")
+    report = anomaly_report(parsed, verification_mode)
     generation_id = uuid.uuid4().hex
     report["generation_id"] = generation_id
     report["requested_range"] = {"start": _iso(requested_start), "end": _iso(effective_end)}
     anomaly_path = output.with_suffix(".anomalies.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix=f".{output.name}.generation.", dir=output.parent
+        prefix=f".{output.name}.generation.", dir=output.parent, ignore_cleanup_errors=True
     ) as directory:
         staging = Path(directory)
         staged_csv = staging / output.name
@@ -149,6 +152,7 @@ def _publish_vision_generation(
             "monthly_archives": list(getattr(client, "monthly_archives", [])),
             "daily_archives": list(getattr(client, "daily_archives", [])),
             "archive_checksums": dict(getattr(client, "archive_checksums", {})),
+            "checksum_verification_mode": verification_mode,
             "rest_suffix": _rest_suffix_metadata(getattr(client, "rest_suffix", None)),
             "timestamp_policy": policy,
             "timestamp_policy_version": policy["version"],

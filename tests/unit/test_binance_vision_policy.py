@@ -128,10 +128,10 @@ def test_archive_rejects_invalid_filename() -> None:
         _parse(_row(opened, opened + 3_599_999), archive_name="BTCUSDT-1h-2024-03-extra.zip")
 
 
-def _archive_bytes(rows: list[list[str]]) -> bytes:
+def _archive_bytes(rows: list[list[str]], inner_name: str) -> bytes:
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("BTCUSDT-1h.csv", "\n".join(",".join(row) for row in rows))
+        archive.writestr(inner_name, "\n".join(",".join(row) for row in rows))
     return stream.getvalue()
 
 
@@ -145,7 +145,9 @@ def _day_rows(day: datetime) -> list[list[str]]:
 def test_daily_archive_requires_exactly_24_candles() -> None:
     with pytest.raises(BinanceVisionError, match="expected 24"):
         _parse_archive(
-            _archive_bytes(_day_rows(datetime(2024, 3, 15, tzinfo=UTC))[:-1]),
+            _archive_bytes(
+                _day_rows(datetime(2024, 3, 15, tzinfo=UTC))[:-1], "BTCUSDT-1h-2024-03-15.csv"
+            ),
             "BTCUSDT-1h-2024-03-15.zip",
             "a" * 64,
         )
@@ -155,7 +157,11 @@ def test_daily_archive_rejects_duplicate_timestamp() -> None:
     rows = _day_rows(datetime(2024, 3, 15, tzinfo=UTC))
     rows[5] = rows[4]
     with pytest.raises(BinanceVisionError, match="coverage error"):
-        _parse_archive(_archive_bytes(rows), "BTCUSDT-1h-2024-03-15.zip", "a" * 64)
+        _parse_archive(
+            _archive_bytes(rows, "BTCUSDT-1h-2024-03-15.csv"),
+            "BTCUSDT-1h-2024-03-15.zip",
+            "a" * 64,
+        )
 
 
 @pytest.mark.parametrize("omitted", [0, -1, 12])
@@ -164,7 +170,9 @@ def test_monthly_archive_rejects_missing_first_last_or_internal_candle(omitted: 
     rows = [row for day in range(29) for row in _day_rows(start + timedelta(days=day))]
     rows.pop(omitted)
     with pytest.raises(BinanceVisionError):
-        _parse_archive(_archive_bytes(rows), "BTCUSDT-1h-2024-02.zip", "a" * 64)
+        _parse_archive(
+            _archive_bytes(rows, "BTCUSDT-1h-2024-02.csv"), "BTCUSDT-1h-2024-02.zip", "a" * 64
+        )
 
 
 def test_microsecond_anomaly_report_preserves_sub_millisecond_precision() -> None:

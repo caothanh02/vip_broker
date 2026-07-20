@@ -16,6 +16,8 @@ from trading_bot.data.binance_historical import BinanceHistoricalDataClient
 from trading_bot.data.binance_vision import (
     BinanceVisionError,
     BinanceVisionHistoricalClient,
+    _checksum_from_text,
+    _parse_archive,
     _verify_anomaly_continuity,
     parse_verified_archive_kline,
 )
@@ -53,10 +55,10 @@ def _row(hour: int, *, close_offset: int = 3_599_999) -> str:
     return f"{opened},100,101,99,100,1,{opened + close_offset}\n"
 
 
-def _zip(rows: str) -> bytes:
+def _zip(rows: str, inner_name: str = "BTCUSDT-1h.csv") -> bytes:
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("BTCUSDT-1h.csv", rows)
+        archive.writestr(inner_name, rows)
     return stream.getvalue()
 
 
@@ -89,7 +91,7 @@ def _rest_client(rows: list[list[object]], now: datetime) -> BinanceHistoricalDa
 
 
 def test_vision_uses_daily_archive_then_strict_rest_suffix(tmp_path: Path) -> None:
-    daily = _zip("".join(_row(hour) for hour in range(24)))
+    daily = _zip("".join(_row(hour) for hour in range(24)), "BTCUSDT-1h-2024-01-01.csv")
     suffix: list[list[object]] = []
     for hour in range(24, 36):
         opened = int((BASE + timedelta(hours=hour)).timestamp() * 1000)
@@ -128,7 +130,9 @@ def test_vision_archive_checksum_mismatch_is_rejected(tmp_path: Path) -> None:
     bad_checksum = httpx.MockTransport(
         lambda request: httpx.Response(
             200,
-            text=("0" * 64 + " file.zip") if request.url.path.endswith("CHECKSUM") else None,
+            text=("0" * 64 + "  BTCUSDT-1h-2024-01-01.zip")
+            if request.url.path.endswith("CHECKSUM")
+            else None,
             content=data if request.url.path.endswith(".zip") else None,
             request=request,
         )
@@ -142,6 +146,154 @@ def test_vision_archive_checksum_mismatch_is_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(BinanceVisionError, match="checksum mismatch"):
         asyncio.run(client.fetch_closed(BASE, BASE + timedelta(days=1)))
+
+
+def _verification_client(
+    tmp_path: Path, handler: httpx.MockTransport, *, offline_cache: bool = False
+) -> BinanceVisionHistoricalClient:
+    return BinanceVisionHistoricalClient(
+        tmp_path / "cache",
+        _rest_client([], BASE + timedelta(days=2)),
+        base_url="https://vision.example/data/spot",
+        transport=handler,
+        now=lambda: BASE + timedelta(days=2),
+        backoff_seconds=0,
+        max_retries=0,
+        offline_cache=offline_cache,
+    )
+
+
+def test_online_checksum_refresh_reuses_matching_cached_zip(tmp_path: Path) -> None:
+    archive_name = "BTCUSDT-1h-2024-01-01.zip"
+    data = b"verified zip bytes"
+    calls = {"checksum": 0, "zip": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(".CHECKSUM"):
+            calls["checksum"] += 1
+            return httpx.Response(
+                200, text=f"{hashlib.sha256(data).hexdigest()}  {archive_name}", request=request
+            )
+        calls["zip"] += 1
+        return httpx.Response(200, content=data, request=request)
+
+    client = _verification_client(tmp_path, httpx.MockTransport(handler))
+    assert (
+        asyncio.run(client._verified_bytes(f"daily/klines/BTCUSDT/1h/{archive_name}", False))[0]
+        == data
+    )
+    assert (
+        asyncio.run(client._verified_bytes(f"daily/klines/BTCUSDT/1h/{archive_name}", False))[0]
+        == data
+    )
+    assert calls == {"checksum": 2, "zip": 1}
+
+
+def test_changed_official_checksum_replaces_cached_zip(tmp_path: Path) -> None:
+    archive_name = "BTCUSDT-1h-2024-01-01.zip"
+    state = {"data": b"old", "zip": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(".CHECKSUM"):
+            return httpx.Response(
+                200,
+                text=f"{hashlib.sha256(state['data']).hexdigest()}  {archive_name}",
+                request=request,
+            )
+        state["zip"] += 1
+        return httpx.Response(200, content=state["data"], request=request)
+
+    client = _verification_client(tmp_path, httpx.MockTransport(handler))
+    relative = f"daily/klines/BTCUSDT/1h/{archive_name}"
+    assert asyncio.run(client._verified_bytes(relative, False))[0] == b"old"
+    state["data"] = b"new"
+    assert asyncio.run(client._verified_bytes(relative, False))[0] == b"new"
+    assert state["zip"] == 2
+
+
+def test_checksum_refresh_failure_does_not_fallback_to_cache(tmp_path: Path) -> None:
+    archive_name = "BTCUSDT-1h-2024-01-01.zip"
+    data = b"cached"
+    cache = tmp_path / "cache" / "daily" / "klines" / "BTCUSDT" / "1h"
+    cache.mkdir(parents=True)
+    (cache / archive_name).write_bytes(data)
+    (cache / f"{archive_name}.CHECKSUM").write_text(
+        f"{hashlib.sha256(data).hexdigest()}  {archive_name}\n", encoding="utf-8"
+    )
+    client = _verification_client(
+        tmp_path, httpx.MockTransport(lambda request: httpx.Response(503, request=request))
+    )
+    with pytest.raises(BinanceVisionError, match="request failed"):
+        asyncio.run(client._verified_bytes(f"daily/klines/BTCUSDT/1h/{archive_name}", False))
+
+
+def test_corrupt_cached_zip_is_refetched_and_verified(tmp_path: Path) -> None:
+    archive_name = "BTCUSDT-1h-2024-01-01.zip"
+    data = b"fresh"
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path.endswith(".CHECKSUM"):
+            return httpx.Response(
+                200, text=f"{hashlib.sha256(data).hexdigest()}  {archive_name}", request=request
+            )
+        calls += 1
+        return httpx.Response(200, content=data, request=request)
+
+    client = _verification_client(tmp_path, httpx.MockTransport(handler))
+    relative = f"daily/klines/BTCUSDT/1h/{archive_name}"
+    asyncio.run(client._verified_bytes(relative, False))
+    (tmp_path / "cache" / relative).write_bytes(b"corrupt")
+    assert asyncio.run(client._verified_bytes(relative, False))[0] == data
+    assert calls == 2
+
+
+def test_offline_mode_requires_valid_cache_without_network(tmp_path: Path) -> None:
+    archive_name = "BTCUSDT-1h-2024-01-01.zip"
+    data = b"cached"
+    online = _verification_client(
+        tmp_path,
+        _archive_transport({archive_name: data}),
+    )
+    relative = f"daily/klines/BTCUSDT/1h/{archive_name}"
+    asyncio.run(online._verified_bytes(relative, False))
+    offline = _verification_client(
+        tmp_path,
+        httpx.MockTransport(lambda request: pytest.fail("offline cache contacted network")),
+        offline_cache=True,
+    )
+    assert asyncio.run(offline._verified_bytes(relative, False))[0] == data
+    with pytest.raises(BinanceVisionError, match="offline cache"):
+        asyncio.run(offline._verified_bytes("daily/klines/BTCUSDT/1h/missing.zip", False))
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    [
+        "a" * 64 + "  other.zip",
+        "a" * 64,
+        "a" * 64 + "  BTCUSDT-1h-2024-01-01.zip\n" + "b" * 64 + "  second.zip",
+        "a" * 64 + "  ../BTCUSDT-1h-2024-01-01.zip",
+    ],
+)
+def test_checksum_sidecar_requires_single_matching_safe_filename(sidecar: str) -> None:
+    with pytest.raises(BinanceVisionError):
+        _checksum_from_text(sidecar, "BTCUSDT-1h-2024-01-01.zip")
+
+
+@pytest.mark.parametrize(
+    "inner_name",
+    [
+        "BTCUSDT-1h-2024-01-02.csv",
+        "ETHUSDT-1h-2024-01-01.csv",
+        "BTCUSDT-4h-2024-01-01.csv",
+        "../BTCUSDT-1h-2024-01-01.csv",
+    ],
+)
+def test_archive_rejects_wrong_or_unsafe_inner_csv_identity(inner_name: str) -> None:
+    with pytest.raises(BinanceVisionError, match="inner CSV identity"):
+        _parse_archive(_zip("", inner_name), "BTCUSDT-1h-2024-01-01.zip", "a" * 64)
 
 
 def test_merge_deduplicates_identical_candles_and_rejects_conflicts() -> None:
@@ -177,6 +329,19 @@ def test_vision_generation_publishes_three_matching_artifacts(tmp_path: Path) ->
     assert metadata["generation_id"] == report["generation_id"]
     assert metadata["stored_candle_count"] == 2
     assert verify_metadata_checksum(output) is True
+
+
+def test_metadata_and_report_record_checksum_verification_mode(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    client = _FakeVisionClient([_candle(0), _candle(1)])
+    client.checksum_verification_mode = "cached_offline"
+    asyncio.run(
+        download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+    )
+    metadata = json.loads(output.with_name("btc.csv.metadata.json").read_text(encoding="utf-8"))
+    report = json.loads(output.with_suffix(".anomalies.json").read_text(encoding="utf-8"))
+    assert metadata["checksum_verification_mode"] == "cached_offline"
+    assert report["policy"]["checksum_verification_mode"] == "cached_offline"
 
 
 def test_vision_generation_rolls_back_if_commit_marker_replace_fails(

@@ -221,7 +221,9 @@ def _message(quality: ArchiveTimestampQuality, expected: int, actual: int) -> st
     return f"{quality.value}: raw_close={actual} expected_close={expected} policy={POLICY_VERSION}"
 
 
-def anomaly_report(parsed: Sequence[ParsedArchiveCandle]) -> dict[str, object]:
+def anomaly_report(
+    parsed: Sequence[ParsedArchiveCandle], checksum_verification_mode: str = "official_online"
+) -> dict[str, object]:
     """Create a deterministic, path-free audit document for accepted archive anomalies."""
     anomalies = [item for item in parsed if item.quality is not ArchiveTimestampQuality.EXACT]
     if any(not item.adjacent_continuity_verified for item in anomalies):
@@ -253,6 +255,7 @@ def anomaly_report(parsed: Sequence[ParsedArchiveCandle]) -> dict[str, object]:
             "maximum_early_close_us": MAX_EARLY_CLOSE_US,
             "late_close_allowed": False,
             "rest_policy": "strict",
+            "checksum_verification_mode": checksum_verification_mode,
         },
         "summary": {
             "archive_candle_count": len(parsed),
@@ -287,6 +290,7 @@ class BinanceVisionHistoricalClient:
         max_retries: int = 3,
         backoff_seconds: float = 0.25,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        offline_cache: bool = False,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
@@ -298,6 +302,8 @@ class BinanceVisionHistoricalClient:
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
         self.sleep = sleep
+        self.offline_cache = offline_cache
+        self.checksum_verification_mode = "cached_offline" if offline_cache else "official_online"
         self.parsed: list[ParsedArchiveCandle] = []
         self.archive_urls: list[str] = []
         self.archive_checksums: dict[str, str] = {}
@@ -387,9 +393,12 @@ class BinanceVisionHistoricalClient:
     async def _verified_bytes(self, relative: str, allow_missing: bool) -> tuple[bytes, str]:
         zip_path = self.cache_dir / relative
         checksum_path = zip_path.with_suffix(".zip.CHECKSUM")
-        cached = _read_verified_cache(zip_path, checksum_path)
-        if cached is not None:
-            return cached
+        archive_name = Path(relative).name
+        if self.offline_cache:
+            offline_cached = _read_verified_cache(zip_path, checksum_path, archive_name)
+            if offline_cached is None:
+                raise BinanceVisionError(f"offline cache unavailable or invalid: {archive_name}")
+            return offline_cached
         for attempt in range(self.max_retries + 1):
             try:
                 async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
@@ -403,6 +412,22 @@ class BinanceVisionHistoricalClient:
                             response=checksum_response,
                         )
                     checksum_response.raise_for_status()
+            except FileNotFoundError:
+                raise
+            except httpx.HTTPError as exc:
+                if attempt == self.max_retries:
+                    raise BinanceVisionError(
+                        f"archive request failed after retries: {relative}"
+                    ) from exc
+                await self._backoff(attempt)
+                continue
+            checksum = _checksum_from_text(checksum_response.text, archive_name)
+            cached = _read_cached_zip(zip_path, checksum)
+            if cached is not None:
+                _write_cache_file(checksum_path, f"{checksum}  {archive_name}\n".encode())
+                return cached, checksum
+            try:
+                async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
                     data_response = await client.get(f"{self.base_url}/{relative}")
                     if data_response.status_code == 404 and allow_missing:
                         raise FileNotFoundError(relative)
@@ -420,11 +445,10 @@ class BinanceVisionHistoricalClient:
                     ) from exc
                 await self._backoff(attempt)
                 continue
-            checksum = _checksum_from_text(checksum_response.text, relative)
             data = data_response.content
             if hashlib.sha256(data).hexdigest() != checksum:
-                raise BinanceVisionError(f"checksum mismatch: {relative}")
-            _write_verified_cache(zip_path, checksum_path, data, checksum)
+                raise BinanceVisionError(f"checksum mismatch: {archive_name}")
+            _write_verified_cache(zip_path, checksum_path, data, checksum, archive_name)
             return data, checksum
         raise AssertionError("unreachable")
 
@@ -442,8 +466,9 @@ def _parse_archive(data: bytes, name: str, checksum: str) -> list[ParsedArchiveC
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             names = archive.namelist()
-            if len(names) != 1 or Path(names[0]).name != names[0] or not names[0].endswith(".csv"):
-                raise BinanceVisionError("unsafe archive path")
+            expected_csv_name = Path(name).with_suffix(".csv").name
+            if len(names) != 1 or names[0] != expected_csv_name:
+                raise BinanceVisionError(f"invalid inner CSV identity: {name}")
             info = archive.getinfo(names[0])
             if info.file_size > 256 * 1024 * 1024 or info.compress_size > 64 * 1024 * 1024:
                 raise BinanceVisionError("archive too large")
@@ -538,41 +563,66 @@ def _last_close(candles: Sequence[Candle]) -> datetime | None:
     return max((candle.close_time for candle in candles), default=None)
 
 
-def _checksum_from_text(text: str, relative: str) -> str:
-    parts = text.split()
-    if (
-        not parts
-        or len(parts[0]) != 64
-        or any(char not in "0123456789abcdefABCDEF" for char in parts[0])
-    ):
-        raise BinanceVisionError(f"invalid official checksum: {relative}")
-    return parts[0].lower()
+def _checksum_from_text(text: str, archive_name: str) -> str:
+    lines = text.splitlines()
+    if len(lines) != 1:
+        raise BinanceVisionError(f"invalid official checksum sidecar: {archive_name}")
+    match = re.fullmatch(
+        r"(?P<hash>[0-9a-fA-F]{64})(?:  (?P<plain>[^/\\]+)| \*(?P<star>[^/\\]+))",
+        lines[0],
+    )
+    if match is None:
+        raise BinanceVisionError(f"invalid official checksum sidecar: {archive_name}")
+    listed_name = match.group("plain") or match.group("star")
+    if listed_name != archive_name:
+        raise BinanceVisionError(f"checksum sidecar archive identity mismatch: {archive_name}")
+    return match.group("hash").lower()
 
 
-def _read_verified_cache(zip_path: Path, checksum_path: Path) -> tuple[bytes, str] | None:
-    if not zip_path.exists() or not checksum_path.exists():
+def _read_cached_zip(zip_path: Path, checksum: str) -> bytes | None:
+    if not zip_path.exists():
         return None
     try:
-        checksum = _checksum_from_text(checksum_path.read_text(encoding="utf-8"), str(zip_path))
         data = zip_path.read_bytes()
     except OSError:
         return None
-    return (data, checksum) if hashlib.sha256(data).hexdigest() == checksum else None
+    return data if hashlib.sha256(data).hexdigest() == checksum else None
 
 
-def _write_verified_cache(zip_path: Path, checksum_path: Path, data: bytes, checksum: str) -> None:
+def _read_verified_cache(
+    zip_path: Path, checksum_path: Path, archive_name: str
+) -> tuple[bytes, str] | None:
+    if not zip_path.exists() or not checksum_path.exists():
+        return None
+    try:
+        checksum = _checksum_from_text(checksum_path.read_text(encoding="utf-8"), archive_name)
+    except (OSError, BinanceVisionError):
+        return None
+    data = _read_cached_zip(zip_path, checksum)
+    return (data, checksum) if data is not None else None
+
+
+def _write_verified_cache(
+    zip_path: Path, checksum_path: Path, data: bytes, checksum: str, archive_name: str
+) -> None:
     zip_path.parent.mkdir(parents=True, exist_ok=True)
-    for path, content in ((zip_path, data), (checksum_path, (checksum + "\n").encode())):
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                dir=path.parent, prefix=f".{path.name}.", delete=False
-            ) as handle:
-                temporary = Path(handle.name)
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-        finally:
-            if temporary is not None and temporary.exists():
-                temporary.unlink()
+    sidecar = f"{checksum}  {archive_name}\n".encode()
+    for path, content in ((zip_path, data), (checksum_path, sidecar)):
+        _write_cache_file(path, content)
+
+
+def _write_cache_file(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
