@@ -28,7 +28,7 @@ from trading_bot.data.csv_store import (
     read_candles,
     verify_metadata_checksum,
 )
-from trading_bot.data.historical import download_vision_historical_csv
+from trading_bot.data.historical import DataCoverageError, download_vision_historical_csv
 from trading_bot.domain.models import Candle
 
 BASE = datetime(2024, 1, 1, tzinfo=UTC)
@@ -291,6 +291,7 @@ class _FakeVisionClient:
         self.monthly_archives = ["test.zip"]
         self.daily_archives: list[str] = []
         self.archive_checksums = {"test.zip": "a" * 64}
+        self.checksum_verification_mode = "official_online"
         self.rest_suffix: tuple[datetime, datetime] | None = None
         self.rest_suffix_candle_count = len(candles) - len(self.parsed)
 
@@ -321,6 +322,31 @@ def test_metadata_and_report_record_checksum_verification_mode(tmp_path: Path) -
     report = json.loads(output.with_suffix(".anomalies.json").read_text(encoding="utf-8"))
     assert metadata["checksum_verification_mode"] == "official_online"
     assert report["policy"]["checksum_verification_mode"] == "official_online"
+
+
+@pytest.mark.parametrize("mode", ["cached_offline", None, 1])
+def test_publisher_rejects_non_official_or_invalid_verification_mode(
+    tmp_path: Path, mode: object
+) -> None:
+    output = tmp_path / "btc.csv"
+    client = _FakeVisionClient([_candle(0), _candle(1)])
+    client.checksum_verification_mode = mode
+    with pytest.raises(DataCoverageError, match="official_online"):
+        asyncio.run(
+            download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+        )
+    assert not output.exists()
+
+
+def test_publisher_rejects_client_without_verification_mode(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    client = _FakeVisionClient([_candle(0), _candle(1)])
+    del client.checksum_verification_mode
+    with pytest.raises(DataCoverageError, match="official_online"):
+        asyncio.run(
+            download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+        )
+    assert not output.exists()
 
 
 def test_vision_generation_rolls_back_if_commit_marker_replace_fails(
@@ -411,6 +437,67 @@ def _rewrite_report_and_checksum(output: Path, report: dict[str, object]) -> Non
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["anomaly_report_sha256"] = csv_sha256(report_path)
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def _rewrite_metadata(output: Path, metadata: dict[str, object]) -> None:
+    output.with_name(f"{output.name}.metadata.json").write_text(
+        json.dumps(metadata), encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("mode", [None, "cached_offline"])
+def test_validator_rejects_missing_or_non_official_metadata_verification_mode(
+    tmp_path: Path, mode: object
+) -> None:
+    output = tmp_path / "btc.csv"
+    asyncio.run(
+        download_vision_historical_csv(
+            _FakeVisionClient([_candle(0), _candle(1)]),
+            BASE,
+            BASE + timedelta(hours=2),
+            output,
+            True,
+        )
+    )
+    metadata_path = output.with_name("btc.csv.metadata.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if mode is None:
+        del metadata["checksum_verification_mode"]
+    else:
+        metadata["checksum_verification_mode"] = mode
+    _rewrite_metadata(output, metadata)
+    with pytest.raises(CsvDataError, match="verification mode"):
+        verify_metadata_checksum(output)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["missing_policy", "policy_not_dictionary", "missing_mode", "non_official_mode", "mismatch"],
+)
+def test_validator_rejects_invalid_report_verification_mode(tmp_path: Path, case: str) -> None:
+    output = tmp_path / "btc.csv"
+    asyncio.run(
+        download_vision_historical_csv(
+            _FakeVisionClient([_candle(0), _candle(1)]),
+            BASE,
+            BASE + timedelta(hours=2),
+            output,
+            True,
+        )
+    )
+    report_path = output.with_suffix(".anomalies.json")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if case == "missing_policy":
+        del report["policy"]
+    elif case == "policy_not_dictionary":
+        report["policy"] = []
+    elif case == "missing_mode":
+        del report["policy"]["checksum_verification_mode"]
+    else:
+        report["policy"]["checksum_verification_mode"] = "cached_offline"
+    _rewrite_report_and_checksum(output, report)
+    with pytest.raises(CsvDataError, match="verification mode"):
+        verify_metadata_checksum(output)
 
 
 def test_metadata_maximum_deviation_matches_report(tmp_path: Path) -> None:

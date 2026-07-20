@@ -206,6 +206,17 @@ def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> None:
         raise CsvDataError("invalid anomaly report JSON") from exc
     if not isinstance(report, dict) or not isinstance(report.get("summary"), dict):
         raise CsvDataError("invalid anomaly report summary")
+    policy = report.get("policy")
+    metadata_mode = metadata.get("checksum_verification_mode")
+    report_mode = policy.get("checksum_verification_mode") if isinstance(policy, dict) else None
+    if (
+        not isinstance(policy, dict)
+        or not isinstance(metadata_mode, str)
+        or not isinstance(report_mode, str)
+        or metadata_mode != report_mode
+        or metadata_mode != "official_online"
+    ):
+        raise CsvDataError("invalid checksum verification mode")
     if metadata.get("generation_id") != report.get("generation_id"):
         raise CsvDataError("metadata and anomaly report generation mismatch")
     summary = report["summary"]
