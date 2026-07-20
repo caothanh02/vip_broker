@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from trading_bot.data.csv_store import (
     SCHEMA_VERSION,
@@ -62,16 +62,19 @@ async def download_vision_historical_csv(
     overwrite: bool = False,
 ) -> DownloadSummary:
     """Publish CSV, audit sidecar and metadata as one verified Vision generation."""
+    if not overwrite:
+        raise ValueError(
+            "Binance Vision publication requires --overwrite to avoid mixing unaudited generations"
+        )
     start, end = validate_hour_aligned_range(start, end)
     effective_end = _effective_end(client, end)
     if effective_end <= start:
         raise ValueError("no closed candles exist in the requested range")
-    existing = [] if overwrite or not output.exists() else read_candles(output)
     downloaded = await client.fetch_closed(start, effective_end)
-    merged = merge_candles(downloaded) if overwrite else merge_candles(existing, downloaded)
+    merged = merge_candles(downloaded)
     _validate_requested_coverage(merged, start, effective_end)
     _publish_vision_generation(client, output, merged, start, end, effective_end)
-    return _summary(merged, 0 if overwrite else len(existing), start, end, effective_end, output)
+    return _summary(merged, 0, start, end, effective_end, output)
 
 
 def _publish_vision_generation(
@@ -107,6 +110,20 @@ def _publish_vision_generation(
         policy = report["policy"]
         if not isinstance(summary, dict) or not isinstance(policy, dict):
             raise DataCoverageError("invalid generated anomaly report")
+        archive_candle_count = len(parsed)
+        exact_archive_candle_count = sum(item.quality.value == "exact" for item in parsed)
+        accepted_archive_anomaly_count = archive_candle_count - exact_archive_candle_count
+        rest_suffix_candle_count = getattr(client, "rest_suffix_candle_count", None)
+        if not isinstance(rest_suffix_candle_count, int) or rest_suffix_candle_count < 0:
+            raise DataCoverageError("invalid REST suffix candle count")
+        if archive_candle_count + rest_suffix_candle_count != len(candles):
+            raise DataCoverageError("archive and REST counts do not match stored candle count")
+        if (
+            summary["archive_candle_count"] != archive_candle_count
+            or summary["exact_archive_timestamp_candle_count"] != exact_archive_candle_count
+            or summary["accepted_archive_anomaly_count"] != accepted_archive_anomaly_count
+        ):
+            raise DataCoverageError("generated anomaly report counts do not match archive records")
         metadata = {
             "generation_id": generation_id,
             "source": "Binance Vision verified archives plus Binance Spot public REST suffix",
@@ -120,7 +137,10 @@ def _publish_vision_generation(
             "stored_first_candle_open": _iso(candles[0].open_time),
             "stored_last_candle_close": _iso(candles[-1].close_time),
             "stored_candle_count": len(candles),
-            "exact_candle_count": len(candles),
+            "archive_candle_count": archive_candle_count,
+            "exact_archive_timestamp_candle_count": exact_archive_candle_count,
+            "accepted_archive_anomaly_count": accepted_archive_anomaly_count,
+            "rest_suffix_candle_count": rest_suffix_candle_count,
             "requested_range_candle_count": _requested_count(requested_start, effective_end),
             "missing_candle_count": 0,
             "duplicate_candle_count": 0,
@@ -132,8 +152,9 @@ def _publish_vision_generation(
             "rest_suffix": _rest_suffix_metadata(getattr(client, "rest_suffix", None)),
             "timestamp_policy": policy,
             "timestamp_policy_version": policy["version"],
-            "accepted_anomaly_count": summary["accepted_early_close_anomalies"],
+            "accepted_anomaly_count": summary["accepted_archive_anomaly_count"],
             "rejected_anomaly_count": summary["rejected_timestamp_anomalies"],
+            "maximum_timestamp_deviation_us": summary["maximum_observed_early_close_us"],
             "maximum_timestamp_deviation_ms": summary["maximum_observed_early_close_ms"],
             "anomaly_report": anomaly_path.name,
             "anomaly_report_sha256": _sha256(staged_anomaly),
@@ -313,7 +334,7 @@ def _summary(
     )
 
 
-def summary_json(summary: DownloadSummary) -> dict[str, str | int | None]:
+def summary_json(summary: DownloadSummary) -> dict[str, Any]:
     values = asdict(summary)
     return {
         "old_candles": values["old_candles"],

@@ -13,9 +13,15 @@ import httpx
 import pytest
 
 from trading_bot.data.binance_historical import BinanceHistoricalDataClient
-from trading_bot.data.binance_vision import BinanceVisionError, BinanceVisionHistoricalClient
+from trading_bot.data.binance_vision import (
+    BinanceVisionError,
+    BinanceVisionHistoricalClient,
+    _verify_anomaly_continuity,
+    parse_verified_archive_kline,
+)
 from trading_bot.data.csv_store import (
     CsvDataError,
+    csv_sha256,
     merge_candles,
     read_candles,
     verify_metadata_checksum,
@@ -145,15 +151,16 @@ def test_merge_deduplicates_identical_candles_and_rejects_conflicts() -> None:
 
 
 class _FakeVisionClient:
-    def __init__(self, candles: list[Candle]) -> None:
+    def __init__(self, candles: list[Candle], parsed: list[object] | None = None) -> None:
         self.candles = candles
         self.now = lambda: BASE + timedelta(days=2)
-        self.parsed: list[object] = []
+        self.parsed = parsed or []
         self.archive_urls = ["https://vision.example/monthly/klines/BTCUSDT/1h/test.zip"]
         self.monthly_archives = ["test.zip"]
         self.daily_archives: list[str] = []
         self.archive_checksums = {"test.zip": "a" * 64}
         self.rest_suffix: tuple[datetime, datetime] | None = None
+        self.rest_suffix_candle_count = len(candles) - len(self.parsed)
 
     async def fetch_closed(self, start_time: datetime, end_time: datetime) -> list[Candle]:
         return [candle for candle in self.candles if start_time <= candle.open_time < end_time]
@@ -233,4 +240,74 @@ def test_metadata_rejects_csv_checksum_mismatch(tmp_path: Path) -> None:
     )
     output.write_text("tampered", encoding="utf-8")
     with pytest.raises(CsvDataError, match="CSV checksum mismatch"):
+        verify_metadata_checksum(output)
+
+
+def _audited_archive_client() -> _FakeVisionClient:
+    parsed = []
+    for hour, close_offset in ((0, 3_599_999), (1, 3_594_362), (2, 3_599_999)):
+        opened = int((BASE + timedelta(hours=hour)).timestamp() * 1_000)
+        parsed.append(
+            parse_verified_archive_kline(
+                [str(opened), "100", "101", "99", "100", "1", str(opened + close_offset)],
+                archive_name="BTCUSDT-1h-2024-01.zip",
+                archive_sha256="a" * 64,
+                row_number=hour,
+                checksum_verified=True,
+            )
+        )
+    verified = _verify_anomaly_continuity(parsed, [item.candle for item in parsed])
+    return _FakeVisionClient([_candle(hour) for hour in range(3)], verified)
+
+
+def _rewrite_report_and_checksum(output: Path, report: dict[str, object]) -> None:
+    report_path = output.with_suffix(".anomalies.json")
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    metadata_path = output.with_name(f"{output.name}.metadata.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["anomaly_report_sha256"] = csv_sha256(report_path)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def test_metadata_maximum_deviation_matches_report(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    asyncio.run(
+        download_vision_historical_csv(
+            _audited_archive_client(), BASE, BASE + timedelta(hours=3), output, True
+        )
+    )
+    metadata = json.loads(output.with_name("btc.csv.metadata.json").read_text(encoding="utf-8"))
+    assert metadata["maximum_timestamp_deviation_us"] == 5_637_000
+    assert metadata["maximum_timestamp_deviation_ms"] == "5637"
+    assert verify_metadata_checksum(output) is True
+
+
+def test_validator_rejects_truncated_anomaly_deviation(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    asyncio.run(
+        download_vision_historical_csv(
+            _audited_archive_client(), BASE, BASE + timedelta(hours=3), output, True
+        )
+    )
+    report_path = output.with_suffix(".anomalies.json")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["anomalies"][0]["early_close_deviation_ms"] = "5637.0"
+    _rewrite_report_and_checksum(output, report)
+    with pytest.raises(CsvDataError, match="millisecond deviation"):
+        verify_metadata_checksum(output)
+
+
+@pytest.mark.parametrize("field", ["archive_candle_count", "rest_suffix_candle_count"])
+def test_validator_rejects_inconsistent_archive_or_rest_counts(tmp_path: Path, field: str) -> None:
+    output = tmp_path / "btc.csv"
+    asyncio.run(
+        download_vision_historical_csv(
+            _audited_archive_client(), BASE, BASE + timedelta(hours=3), output, True
+        )
+    )
+    metadata_path = output.with_name("btc.csv.metadata.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata[field] += 1
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(CsvDataError, match="counts"):
         verify_metadata_checksum(output)

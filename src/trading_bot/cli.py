@@ -193,11 +193,29 @@ def _download(args: argparse.Namespace, settings: BotSettings) -> None:
         summary = asyncio.run(
             download_vision_historical_csv(client, args.start, end, args.output, args.overwrite)
         )
+        payload = summary_json(summary)
+        payload["vision_audit"] = {
+            "archive_candle_count": len(client.parsed),
+            "exact_archive_timestamp_candle_count": sum(
+                item.quality.value == "exact" for item in client.parsed
+            ),
+            "accepted_archive_anomaly_count": sum(
+                item.quality.value != "exact" for item in client.parsed
+            ),
+            "rest_suffix_candle_count": client.rest_suffix_candle_count,
+            "maximum_timestamp_deviation_us": max(
+                (item.early_close_deviation_us for item in client.parsed), default=0
+            ),
+            "missing_candle_count": 0,
+            "duplicate_candle_count": 0,
+            "conflicting_candle_count": 0,
+        }
     else:
         summary = asyncio.run(
             download_historical_csv(rest, args.start, end, args.output, args.overwrite)
         )
-    print(json.dumps(summary_json(summary), indent=2))
+        payload = summary_json(summary)
+    print(json.dumps(payload, indent=2))
 
 
 def _validate(args: argparse.Namespace) -> None:

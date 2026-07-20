@@ -220,24 +220,65 @@ def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> None:
     )
     deviations: list[int] = []
     for record in records:
-        if isinstance(record, dict):
-            deviation = record.get("early_close_deviation_ms")
-            if isinstance(deviation, int):
-                deviations.append(deviation)
-    expected = {
-        "accepted_early_close_anomalies": accepted,
+        if not isinstance(record, dict):
+            raise CsvDataError("invalid anomaly report record")
+        deviation_us = record.get("early_close_deviation_us")
+        deviation_ms = record.get("early_close_deviation_ms")
+        if (
+            not isinstance(deviation_us, int)
+            or deviation_us < 0
+            or not isinstance(deviation_ms, str)
+        ):
+            raise CsvDataError("invalid anomaly deviation")
+        if _milliseconds_string(deviation_us) != deviation_ms:
+            raise CsvDataError("anomaly millisecond deviation does not match microseconds")
+        deviations.append(deviation_us)
+    maximum_deviation_us = max(deviations, default=0)
+    archive_summary_count = _required_nonnegative_int(summary, "archive_candle_count")
+    exact_summary_count = _required_nonnegative_int(summary, "exact_archive_timestamp_candle_count")
+    expected: dict[str, int | str] = {
+        "archive_candle_count": archive_summary_count,
+        "exact_archive_timestamp_candle_count": exact_summary_count,
+        "accepted_archive_anomaly_count": accepted,
         "rejected_timestamp_anomalies": rejected,
-        "maximum_observed_early_close_ms": max(deviations, default=0),
+        "maximum_observed_early_close_us": maximum_deviation_us,
+        "maximum_observed_early_close_ms": _milliseconds_string(maximum_deviation_us),
     }
     if any(summary.get(key) != value for key, value in expected.items()):
         raise CsvDataError("anomaly report summary does not match records")
+    if exact_summary_count + accepted != archive_summary_count:
+        raise CsvDataError("anomaly report archive counts are inconsistent")
+    stored_count = _required_nonnegative_int(metadata, "stored_candle_count")
+    archive_count = _required_nonnegative_int(metadata, "archive_candle_count")
+    exact_count = _required_nonnegative_int(metadata, "exact_archive_timestamp_candle_count")
+    accepted_count = _required_nonnegative_int(metadata, "accepted_archive_anomaly_count")
+    rest_count = _required_nonnegative_int(metadata, "rest_suffix_candle_count")
+    if archive_count != exact_count + accepted_count or archive_count + rest_count != stored_count:
+        raise CsvDataError("metadata source counts are inconsistent")
+    if len(read_candles(path)) != stored_count:
+        raise CsvDataError("metadata stored candle count does not match CSV")
     metadata_expected = {
         "accepted_anomaly_count": accepted,
         "rejected_anomaly_count": rejected,
-        "maximum_timestamp_deviation_ms": max(deviations, default=0),
+        "maximum_timestamp_deviation_us": maximum_deviation_us,
+        "maximum_timestamp_deviation_ms": _milliseconds_string(maximum_deviation_us),
+        "archive_candle_count": archive_summary_count,
+        "exact_archive_timestamp_candle_count": exact_summary_count,
+        "accepted_archive_anomaly_count": accepted,
     }
     if any(metadata.get(key) != value for key, value in metadata_expected.items()):
         raise CsvDataError("metadata anomaly summary does not match report")
+
+
+def _required_nonnegative_int(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int) or value < 0:
+        raise CsvDataError(f"invalid {key}")
+    return value
+
+
+def _milliseconds_string(microseconds: int) -> str:
+    return format(Decimal(microseconds) / Decimal(1_000), "f")
 
 
 def write_metadata_atomic(path: Path, metadata: dict[str, Any]) -> None:

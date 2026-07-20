@@ -4,10 +4,11 @@ import csv
 import hashlib
 import io
 import os
+import re
 import tempfile
 import zipfile
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -26,6 +27,9 @@ POLICY_VERSION = "1.0"
 MAX_EARLY_CLOSE_MS = 60_000
 MAX_EARLY_CLOSE_US = 60_000_000
 BINANCE_VISION = "https://data.binance.vision/data/spot"
+MICROSECOND_ARCHIVE_START = datetime(2025, 1, 1, tzinfo=UTC)
+_MONTHLY_ARCHIVE = re.compile(r"BTCUSDT-1h-(\d{4})-(\d{2})\.zip\Z")
+_DAILY_ARCHIVE = re.compile(r"BTCUSDT-1h-(\d{4})-(\d{2})-(\d{2})\.zip\Z")
 
 
 class ArchiveTimestampQuality(StrEnum):
@@ -56,6 +60,14 @@ class ParsedArchiveCandle:
     archive_name: str
     archive_sha256: str
     row_number: int
+    adjacent_continuity_verified: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ArchivePeriod:
+    cadence: Literal["monthly", "daily"]
+    start: datetime
+    end: datetime
 
 
 def parse_verified_archive_kline(
@@ -77,7 +89,18 @@ def parse_verified_archive_kline(
         raise ArchiveTimestampPolicyError("archive row has fewer than seven columns")
     open_timestamp = _integer(row[0], "open")
     close_timestamp = _integer(row[6], "close")
-    unit, expected, quality, deviation_us = _timestamp_policy(open_timestamp, close_timestamp)
+    period = parse_archive_period(archive_name)
+    unit = detect_archive_timestamp_unit(open_timestamp)
+    close_unit = detect_archive_timestamp_unit(close_timestamp)
+    if close_unit != unit:
+        raise ArchiveTimestampPolicyError("mixed open and close timestamp units")
+    open_time = datetime_from_archive_timestamp(open_timestamp, unit)
+    validate_timestamp_unit_for_date(open_time, unit)
+    if not period.start <= open_time < period.end:
+        raise ArchiveTimestampPolicyError(
+            f"row open time is outside named {period.cadence} archive period"
+        )
+    expected, quality, deviation_us = _timestamp_policy(open_timestamp, close_timestamp, unit)
     try:
         open_, high, low, close, volume = (Decimal(row[index]) for index in range(1, 6))
     except (InvalidOperation, ValueError) as exc:
@@ -88,11 +111,6 @@ def parse_verified_archive_kline(
         raise ArchiveTimestampPolicyError("invalid archive OHLCV")
     if high < max(open_, low, close) or low > min(open_, high, close):
         raise ArchiveTimestampPolicyError("invalid archive OHLC")
-    scale = 1_000 if unit == "milliseconds" else 1_000_000
-    seconds, remainder = divmod(open_timestamp, scale)
-    open_time = datetime.fromtimestamp(seconds, UTC) + timedelta(
-        microseconds=remainder * (1_000_000 // scale)
-    )
     return ParsedArchiveCandle(
         Candle(
             open_time,
@@ -118,15 +136,34 @@ def parse_verified_archive_kline(
     )
 
 
-def _timestamp_policy(
-    open_timestamp: int, close_timestamp: int
-) -> tuple[Literal["milliseconds", "microseconds"], int, ArchiveTimestampQuality, int]:
-    # Both representations are divisible by 3,600,000 at an hourly boundary;
-    # infer their precision before checking alignment.  Modern archive rows use
-    # epoch microseconds (16 digits), legacy rows use epoch milliseconds.
-    unit: Literal["milliseconds", "microseconds"] = (
-        "microseconds" if open_timestamp >= 1_000_000_000_000_000 else "milliseconds"
+def detect_archive_timestamp_unit(raw: int) -> Literal["milliseconds", "microseconds"]:
+    """Detect only the raw representation; date policy is enforced separately."""
+    return "microseconds" if raw >= 1_000_000_000_000_000 else "milliseconds"
+
+
+def datetime_from_archive_timestamp(
+    raw: int, unit: Literal["milliseconds", "microseconds"]
+) -> datetime:
+    scale = 1_000 if unit == "milliseconds" else 1_000_000
+    seconds, remainder = divmod(raw, scale)
+    return datetime.fromtimestamp(seconds, UTC) + timedelta(
+        microseconds=remainder * (1_000_000 // scale)
     )
+
+
+def validate_timestamp_unit_for_date(
+    open_time: datetime, unit: Literal["milliseconds", "microseconds"]
+) -> None:
+    required = "milliseconds" if open_time < MICROSECOND_ARCHIVE_START else "microseconds"
+    if unit != required:
+        raise ArchiveTimestampPolicyError(
+            f"{required} required for archive open time {open_time.isoformat()}"
+        )
+
+
+def _timestamp_policy(
+    open_timestamp: int, close_timestamp: int, unit: Literal["milliseconds", "microseconds"]
+) -> tuple[int, ArchiveTimestampQuality, int]:
     scale, tolerance = (
         (1_000_000, MAX_EARLY_CLOSE_US) if unit == "microseconds" else (1_000, MAX_EARLY_CLOSE_MS)
     )
@@ -147,7 +184,25 @@ def _timestamp_policy(
         if early == 0
         else ArchiveTimestampQuality.EARLY_CLOSE_WITHIN_TOLERANCE
     )
-    return unit, expected, quality, early * (1_000 if unit == "milliseconds" else 1)
+    return expected, quality, early * (1_000 if unit == "milliseconds" else 1)
+
+
+def parse_archive_period(archive_name: str) -> ArchivePeriod:
+    """Parse the exact official filename and derive its UTC half-open period."""
+    monthly = _MONTHLY_ARCHIVE.fullmatch(archive_name)
+    daily = _DAILY_ARCHIVE.fullmatch(archive_name)
+    try:
+        if monthly:
+            year, month = (int(value) for value in monthly.groups())
+            start = datetime(year, month, 1, tzinfo=UTC)
+            return ArchivePeriod("monthly", start, _next_month(start))
+        if daily:
+            year, month, day = (int(value) for value in daily.groups())
+            start = datetime(year, month, day, tzinfo=UTC)
+            return ArchivePeriod("daily", start, start + timedelta(days=1))
+    except ValueError as exc:
+        raise ArchiveTimestampPolicyError(f"invalid archive filename: {archive_name}") from exc
+    raise ArchiveTimestampPolicyError(f"invalid archive filename: {archive_name}")
 
 
 def _integer(value: str, field: str) -> int:
@@ -169,6 +224,8 @@ def _message(quality: ArchiveTimestampQuality, expected: int, actual: int) -> st
 def anomaly_report(parsed: Sequence[ParsedArchiveCandle]) -> dict[str, object]:
     """Create a deterministic, path-free audit document for accepted archive anomalies."""
     anomalies = [item for item in parsed if item.quality is not ArchiveTimestampQuality.EXACT]
+    if any(not item.adjacent_continuity_verified for item in anomalies):
+        raise BinanceVisionError("anomaly continuity has not been verified")
     records = [
         {
             "archive": item.archive_name,
@@ -179,7 +236,8 @@ def anomaly_report(parsed: Sequence[ParsedArchiveCandle]) -> dict[str, object]:
             "raw_close_timestamp": item.raw_close_timestamp,
             "expected_close_timestamp": item.expected_close_timestamp,
             "timestamp_unit": item.timestamp_unit,
-            "early_close_deviation_ms": item.early_close_deviation_us // 1_000,
+            "early_close_deviation_us": item.early_close_deviation_us,
+            "early_close_deviation_ms": _milliseconds_string(item.early_close_deviation_us),
             "quality": item.quality.value,
             "accepted": True,
             "adjacent_continuity_verified": True,
@@ -192,19 +250,28 @@ def anomaly_report(parsed: Sequence[ParsedArchiveCandle]) -> dict[str, object]:
             "name": POLICY_NAME,
             "version": POLICY_VERSION,
             "maximum_early_close_ms": MAX_EARLY_CLOSE_MS,
+            "maximum_early_close_us": MAX_EARLY_CLOSE_US,
             "late_close_allowed": False,
             "rest_policy": "strict",
         },
         "summary": {
-            "exact_timestamp_candles": len(parsed) - len(records),
-            "accepted_early_close_anomalies": len(records),
+            "archive_candle_count": len(parsed),
+            "exact_archive_timestamp_candle_count": len(parsed) - len(records),
+            "accepted_archive_anomaly_count": len(records),
             "rejected_timestamp_anomalies": 0,
-            "maximum_observed_early_close_ms": max(
-                (record["early_close_deviation_ms"] for record in records), default=0
+            "maximum_observed_early_close_us": max(
+                (item.early_close_deviation_us for item in anomalies), default=0
+            ),
+            "maximum_observed_early_close_ms": _milliseconds_string(
+                max((item.early_close_deviation_us for item in anomalies), default=0)
             ),
         },
         "anomalies": records,
     }
+
+
+def _milliseconds_string(microseconds: int) -> str:
+    return format(Decimal(microseconds) / Decimal(1_000), "f")
 
 
 class BinanceVisionHistoricalClient:
@@ -237,6 +304,7 @@ class BinanceVisionHistoricalClient:
         self.monthly_archives: list[str] = []
         self.daily_archives: list[str] = []
         self.rest_suffix: tuple[datetime, datetime] | None = None
+        self.rest_suffix_candle_count = 0
 
     async def fetch_closed(self, start_time: datetime, end_time: datetime) -> list[Candle]:
         start, end = validate_hour_aligned_range(start_time, end_time)
@@ -247,6 +315,7 @@ class BinanceVisionHistoricalClient:
         self.monthly_archives = []
         self.daily_archives = []
         self.rest_suffix = None
+        self.rest_suffix_candle_count = 0
         archive_end = _month_start(closed_end)
         candles: list[Candle] = []
         cursor = _month_start(start)
@@ -263,14 +332,25 @@ class BinanceVisionHistoricalClient:
             candles.extend(await self._load_daily_range(archive_end, daily_end, strict=False))
             suffix_start = _last_close(candles) or start
             if suffix_start < closed_end:
-                candles.extend(await self.rest_client.fetch_closed(suffix_start, closed_end))
+                rest_candles = await self.rest_client.fetch_closed(suffix_start, closed_end)
+                expected_rest_count = int((closed_end - suffix_start) / timedelta(hours=1))
+                if len(rest_candles) != expected_rest_count:
+                    raise BinanceVisionError(
+                        "REST suffix does not provide complete hourly coverage"
+                    )
+                candles.extend(rest_candles)
                 self.rest_suffix = (suffix_start, closed_end)
+                self.rest_suffix_candle_count = len(rest_candles)
         try:
             merged = merge_candles(candles)
         except ValueError as exc:
             raise BinanceVisionError(str(exc)) from exc
+        verified = _verify_anomaly_continuity(self.parsed, merged)
         result = [candle for candle in merged if start <= candle.open_time < closed_end]
         _validate_continuity(result, start, closed_end)
+        self.parsed = [item for item in verified if start <= item.candle.open_time < closed_end]
+        if len(self.parsed) + self.rest_suffix_candle_count != len(result):
+            raise BinanceVisionError("archive and REST source counts do not match stored coverage")
         return result
 
     async def _load_daily_range(
@@ -388,7 +468,27 @@ def _parse_archive(data: bytes, name: str, checksum: str) -> list[ParsedArchiveC
         except ArchiveTimestampPolicyError as exc:
             raw_open = row[0] if row else "<missing>"
             raise BinanceVisionError(f"{name} row {index} raw_open={raw_open}: {exc}") from exc
+    _validate_archive_coverage(parsed, parse_archive_period(name))
     return parsed
+
+
+def _validate_archive_coverage(
+    parsed: Sequence[ParsedArchiveCandle], period: ArchivePeriod
+) -> None:
+    expected_count = int((period.end - period.start) / timedelta(hours=1))
+    if len(parsed) != expected_count:
+        raise BinanceVisionError(
+            f"{period.cadence} archive has {len(parsed)} rows; expected {expected_count}"
+        )
+    expected = period.start
+    for item in parsed:
+        if item.candle.open_time != expected:
+            raise BinanceVisionError(
+                f"{period.cadence} archive coverage error at {expected.isoformat()}"
+            )
+        expected += timedelta(hours=1)
+    if expected != period.end:
+        raise BinanceVisionError(f"{period.cadence} archive does not end at its named period")
 
 
 def _month_start(value: datetime) -> datetime:
@@ -411,6 +511,27 @@ def _validate_continuity(candles: Sequence[Candle], start: datetime, end: dateti
         expected = candle.close_time
     if expected != end:
         raise BinanceVisionError(f"missing candle at {expected.isoformat()}")
+
+
+def _verify_anomaly_continuity(
+    parsed: Sequence[ParsedArchiveCandle], merged: Sequence[Candle]
+) -> list[ParsedArchiveCandle]:
+    """Mark anomalies only after both global chronological neighbours exist."""
+    available = {candle.open_time for candle in merged}
+    verified: list[ParsedArchiveCandle] = []
+    for item in parsed:
+        if item.quality is ArchiveTimestampQuality.EXACT:
+            verified.append(item)
+            continue
+        open_time = item.candle.open_time
+        previous = open_time - timedelta(hours=1)
+        following = open_time + timedelta(hours=1)
+        if previous not in available or following not in available:
+            raise BinanceVisionError(
+                f"cannot verify adjacent continuity for anomaly at {open_time.isoformat()}"
+            )
+        verified.append(replace(item, adjacent_continuity_verified=True))
+    return verified
 
 
 def _last_close(candles: Sequence[Candle]) -> datetime | None:
