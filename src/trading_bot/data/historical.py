@@ -100,10 +100,8 @@ def _publish_vision_generation(
     report["requested_range"] = {"start": _iso(requested_start), "end": _iso(effective_end)}
     anomaly_path = output.with_suffix(".anomalies.json")
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=f".{output.name}.generation.", dir=output.parent, ignore_cleanup_errors=True
-    ) as directory:
-        staging = Path(directory)
+    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.generation.", dir=output.parent))
+    try:
         staged_csv = staging / output.name
         staged_anomaly = staging / anomaly_path.name
         staged_metadata = staging / metadata_path(output).name
@@ -187,6 +185,11 @@ def _publish_vision_generation(
                 elif target.exists():
                     target.unlink()
             raise
+    finally:
+        # Windows security scanners may retain a staging .tmp briefly after an
+        # atomic replace.  It is never a committed generation; cleanup must not
+        # turn a successfully published generation into a failed download.
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def _rest_suffix_metadata(value: object) -> dict[str, str] | None:
