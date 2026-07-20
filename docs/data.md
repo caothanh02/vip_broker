@@ -10,7 +10,7 @@ For long history, `--source binance-vision` reads the official Binance Vision Sp
 
 The Vision writer requires `--overwrite`: it downloads and audits the full requested range instead of merging unaudited prior CSV rows. It stages the CSV, anomaly report, and metadata together. Metadata is published last and contains a generation ID plus SHA-256 checksums for both sidecars. `validate-data` rejects a checksum mismatch, a missing referenced anomaly report, mismatched precision, or summary records that disagree with metadata.
 
-Online Vision runs always refresh the official `.CHECKSUM` before deciding whether a cached ZIP can be reused. `--offline-cache` is explicit and only for an already verified local cache; it never claims a fresh official verification. Both metadata and anomaly report record `checksum_verification_mode` as `official_online` or `cached_offline`.
+Vision runs always refresh the official `.CHECKSUM` before deciding whether a cached ZIP can be reused. Metadata and anomaly reports always record `checksum_verification_mode` as `official_online`.
 
 ```powershell
 trading-bot download-data --start 2024-01-01 --end 2024-02-01 --output data/raw/btcusdt_1h.csv

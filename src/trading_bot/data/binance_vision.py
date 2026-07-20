@@ -221,9 +221,7 @@ def _message(quality: ArchiveTimestampQuality, expected: int, actual: int) -> st
     return f"{quality.value}: raw_close={actual} expected_close={expected} policy={POLICY_VERSION}"
 
 
-def anomaly_report(
-    parsed: Sequence[ParsedArchiveCandle], checksum_verification_mode: str = "official_online"
-) -> dict[str, object]:
+def anomaly_report(parsed: Sequence[ParsedArchiveCandle]) -> dict[str, object]:
     """Create a deterministic, path-free audit document for accepted archive anomalies."""
     anomalies = [item for item in parsed if item.quality is not ArchiveTimestampQuality.EXACT]
     if any(not item.adjacent_continuity_verified for item in anomalies):
@@ -255,7 +253,7 @@ def anomaly_report(
             "maximum_early_close_us": MAX_EARLY_CLOSE_US,
             "late_close_allowed": False,
             "rest_policy": "strict",
-            "checksum_verification_mode": checksum_verification_mode,
+            "checksum_verification_mode": "official_online",
         },
         "summary": {
             "archive_candle_count": len(parsed),
@@ -290,7 +288,6 @@ class BinanceVisionHistoricalClient:
         max_retries: int = 3,
         backoff_seconds: float = 0.25,
         sleep: Callable[[float], Awaitable[None]] | None = None,
-        offline_cache: bool = False,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
@@ -302,8 +299,7 @@ class BinanceVisionHistoricalClient:
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
         self.sleep = sleep
-        self.offline_cache = offline_cache
-        self.checksum_verification_mode = "cached_offline" if offline_cache else "official_online"
+        self.checksum_verification_mode = "official_online"
         self.parsed: list[ParsedArchiveCandle] = []
         self.archive_urls: list[str] = []
         self.archive_checksums: dict[str, str] = {}
@@ -394,11 +390,6 @@ class BinanceVisionHistoricalClient:
         zip_path = self.cache_dir / relative
         checksum_path = zip_path.with_suffix(".zip.CHECKSUM")
         archive_name = Path(relative).name
-        if self.offline_cache:
-            offline_cached = _read_verified_cache(zip_path, checksum_path, archive_name)
-            if offline_cached is None:
-                raise BinanceVisionError(f"offline cache unavailable or invalid: {archive_name}")
-            return offline_cached
         for attempt in range(self.max_retries + 1):
             try:
                 async with httpx.AsyncClient(timeout=30, transport=self.transport) as client:
@@ -587,19 +578,6 @@ def _read_cached_zip(zip_path: Path, checksum: str) -> bytes | None:
     except OSError:
         return None
     return data if hashlib.sha256(data).hexdigest() == checksum else None
-
-
-def _read_verified_cache(
-    zip_path: Path, checksum_path: Path, archive_name: str
-) -> tuple[bytes, str] | None:
-    if not zip_path.exists() or not checksum_path.exists():
-        return None
-    try:
-        checksum = _checksum_from_text(checksum_path.read_text(encoding="utf-8"), archive_name)
-    except (OSError, BinanceVisionError):
-        return None
-    data = _read_cached_zip(zip_path, checksum)
-    return (data, checksum) if data is not None else None
 
 
 def _write_verified_cache(

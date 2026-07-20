@@ -91,10 +91,8 @@ def _publish_vision_generation(
     parsed = getattr(client, "parsed", None)
     if not isinstance(parsed, list):
         raise TypeError("Binance Vision publisher requires archive audit records")
-    verification_mode = getattr(client, "checksum_verification_mode", "official_online")
-    if verification_mode not in {"official_online", "cached_offline"}:
-        raise DataCoverageError("invalid checksum verification mode")
-    report = anomaly_report(parsed, verification_mode)
+    verification_mode = "official_online"
+    report = anomaly_report(parsed)
     generation_id = uuid.uuid4().hex
     report["generation_id"] = generation_id
     report["requested_range"] = {"start": _iso(requested_start), "end": _iso(effective_end)}

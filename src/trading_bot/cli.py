@@ -150,11 +150,6 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--symbol", default="BTCUSDT")
     download.add_argument("--timeframe", default="1h")
     download.add_argument("--source", choices=("rest", "binance-vision"), default="rest")
-    download.add_argument(
-        "--offline-cache",
-        action="store_true",
-        help="use only a previously checksum-verified Binance Vision cache",
-    )
     download.add_argument("--start", type=parse_utc, required=True)
     download.add_argument("--end", type=parse_download_end, required=True)
     download.add_argument("--output", type=Path, required=True)
@@ -179,8 +174,6 @@ def _ensure_market(symbol: str, timeframe: str) -> None:
 
 def _download(args: argparse.Namespace, settings: BotSettings) -> None:
     _ensure_market(args.symbol, args.timeframe)
-    if args.offline_cache and args.source != "binance-vision":
-        raise ValueError("--offline-cache requires --source binance-vision")
     end = args.end or datetime.now(UTC).replace(minute=0, second=0, microsecond=0) + timedelta(
         hours=1
     )
@@ -196,7 +189,6 @@ def _download(args: argparse.Namespace, settings: BotSettings) -> None:
             Path("data/archive_cache"),
             rest,
             max_retries=settings.http_max_retries,
-            offline_cache=args.offline_cache,
         )
         summary = asyncio.run(
             download_vision_historical_csv(client, args.start, end, args.output, args.overwrite)

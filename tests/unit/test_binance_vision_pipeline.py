@@ -149,7 +149,7 @@ def test_vision_archive_checksum_mismatch_is_rejected(tmp_path: Path) -> None:
 
 
 def _verification_client(
-    tmp_path: Path, handler: httpx.MockTransport, *, offline_cache: bool = False
+    tmp_path: Path, handler: httpx.MockTransport
 ) -> BinanceVisionHistoricalClient:
     return BinanceVisionHistoricalClient(
         tmp_path / "cache",
@@ -159,7 +159,6 @@ def _verification_client(
         now=lambda: BASE + timedelta(days=2),
         backoff_seconds=0,
         max_retries=0,
-        offline_cache=offline_cache,
     )
 
 
@@ -249,25 +248,6 @@ def test_corrupt_cached_zip_is_refetched_and_verified(tmp_path: Path) -> None:
     assert calls == 2
 
 
-def test_offline_mode_requires_valid_cache_without_network(tmp_path: Path) -> None:
-    archive_name = "BTCUSDT-1h-2024-01-01.zip"
-    data = b"cached"
-    online = _verification_client(
-        tmp_path,
-        _archive_transport({archive_name: data}),
-    )
-    relative = f"daily/klines/BTCUSDT/1h/{archive_name}"
-    asyncio.run(online._verified_bytes(relative, False))
-    offline = _verification_client(
-        tmp_path,
-        httpx.MockTransport(lambda request: pytest.fail("offline cache contacted network")),
-        offline_cache=True,
-    )
-    assert asyncio.run(offline._verified_bytes(relative, False))[0] == data
-    with pytest.raises(BinanceVisionError, match="offline cache"):
-        asyncio.run(offline._verified_bytes("daily/klines/BTCUSDT/1h/missing.zip", False))
-
-
 @pytest.mark.parametrize(
     "sidecar",
     [
@@ -334,14 +314,13 @@ def test_vision_generation_publishes_three_matching_artifacts(tmp_path: Path) ->
 def test_metadata_and_report_record_checksum_verification_mode(tmp_path: Path) -> None:
     output = tmp_path / "btc.csv"
     client = _FakeVisionClient([_candle(0), _candle(1)])
-    client.checksum_verification_mode = "cached_offline"
     asyncio.run(
         download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
     )
     metadata = json.loads(output.with_name("btc.csv.metadata.json").read_text(encoding="utf-8"))
     report = json.loads(output.with_suffix(".anomalies.json").read_text(encoding="utf-8"))
-    assert metadata["checksum_verification_mode"] == "cached_offline"
-    assert report["policy"]["checksum_verification_mode"] == "cached_offline"
+    assert metadata["checksum_verification_mode"] == "official_online"
+    assert report["policy"]["checksum_verification_mode"] == "official_online"
 
 
 def test_vision_generation_rolls_back_if_commit_marker_replace_fails(
