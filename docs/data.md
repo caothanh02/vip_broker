@@ -6,8 +6,13 @@ All ranges are UTC and half-open: `[start, end)`. Date-only inputs such as `2024
 
 Only closed candles are stored. The CSV uses Decimal strings for OHLCV, is written atomically with a metadata sidecar, and is ignored by Git.
 
+For long history, `--source binance-vision` reads the official Binance Vision Spot archives first, verifies each ZIP against its official `.CHECKSUM`, then uses public Binance REST only for the newest archive suffix. It needs no API key. Archive rows before 2025 use milliseconds and rows from 2025 use microseconds. REST close timestamps remain exact; verified archive rows may close early by at most 60 seconds, never late. Every accepted early-close exception is recorded in `<csv-stem>.anomalies.json` with its archive checksum, raw timestamps, row number, and canonical UTC candle interval.
+
+The Vision writer stages the CSV, anomaly report, and metadata together. Metadata is published last and contains a generation ID plus SHA-256 checksums for both sidecars. `validate-data` rejects a checksum mismatch, a missing referenced anomaly report, or summary records that disagree with metadata.
+
 ```powershell
 trading-bot download-data --start 2024-01-01 --end 2024-02-01 --output data/raw/btcusdt_1h.csv
+trading-bot download-data --source binance-vision --start 2021-12-01 --end now --output data/raw/btcusdt_1h.csv --overwrite
 trading-bot validate-data --input data/raw/btcusdt_1h.csv --max-age-hours 48
 trading-bot backtest --input data/raw/btcusdt_1h.csv --output reports/backtests/btcusdt_1h_baseline.json
 ```

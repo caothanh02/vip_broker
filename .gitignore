@@ -8,6 +8,7 @@ __pycache__/
 data/raw/*
 data/raw/*.csv
 data/raw/*.json
+data/archive_cache/
 data/validated/*
 data/features/*
 data/datasets/*

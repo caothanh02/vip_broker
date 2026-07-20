@@ -184,7 +184,60 @@ def verify_metadata_checksum(path: Path) -> bool:
     checksum = metadata.get("csv_sha256") if isinstance(metadata, dict) else None
     if not isinstance(checksum, str) or checksum != csv_sha256(path):
         raise CsvDataError("metadata CSV checksum mismatch")
+    _verify_anomaly_sidecar(path, metadata)
     return True
+
+
+def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> None:
+    report_name = metadata.get("anomaly_report")
+    report_checksum = metadata.get("anomaly_report_sha256")
+    if report_name is None and report_checksum is None:
+        return
+    if not isinstance(report_name, str) or not isinstance(report_checksum, str):
+        raise CsvDataError("metadata anomaly sidecar reference is invalid")
+    report_path = path.parent / report_name
+    if not report_path.exists():
+        raise CsvDataError("metadata anomaly report is missing")
+    if csv_sha256(report_path) != report_checksum:
+        raise CsvDataError("metadata anomaly report checksum mismatch")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CsvDataError("invalid anomaly report JSON") from exc
+    if not isinstance(report, dict) or not isinstance(report.get("summary"), dict):
+        raise CsvDataError("invalid anomaly report summary")
+    if metadata.get("generation_id") != report.get("generation_id"):
+        raise CsvDataError("metadata and anomaly report generation mismatch")
+    summary = report["summary"]
+    records = report.get("anomalies")
+    if not isinstance(records, list):
+        raise CsvDataError("invalid anomaly report records")
+    accepted = sum(
+        isinstance(record, dict) and record.get("accepted") is True for record in records
+    )
+    rejected = sum(
+        isinstance(record, dict) and record.get("accepted") is False for record in records
+    )
+    deviations: list[int] = []
+    for record in records:
+        if isinstance(record, dict):
+            deviation = record.get("early_close_deviation_ms")
+            if isinstance(deviation, int):
+                deviations.append(deviation)
+    expected = {
+        "accepted_early_close_anomalies": accepted,
+        "rejected_timestamp_anomalies": rejected,
+        "maximum_observed_early_close_ms": max(deviations, default=0),
+    }
+    if any(summary.get(key) != value for key, value in expected.items()):
+        raise CsvDataError("anomaly report summary does not match records")
+    metadata_expected = {
+        "accepted_anomaly_count": accepted,
+        "rejected_anomaly_count": rejected,
+        "maximum_timestamp_deviation_ms": max(deviations, default=0),
+    }
+    if any(metadata.get(key) != value for key, value in metadata_expected.items()):
+        raise CsvDataError("metadata anomaly summary does not match report")
 
 
 def write_metadata_atomic(path: Path, metadata: dict[str, Any]) -> None:
