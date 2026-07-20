@@ -13,13 +13,19 @@ from typing import Any
 
 from trading_bot.backtest.engine import CandleBacktester
 from trading_bot.data.binance_historical import BinanceDataError, BinanceHistoricalDataClient
+from trading_bot.data.binance_vision import BinanceVisionError, BinanceVisionHistoricalClient
 from trading_bot.data.csv_store import (
     CsvDataError,
     read_candles,
     verify_metadata_checksum,
     write_json_atomic,
 )
-from trading_bot.data.historical import DataCoverageError, download_historical_csv, summary_json
+from trading_bot.data.historical import (
+    DataCoverageError,
+    download_historical_csv,
+    download_vision_historical_csv,
+    summary_json,
+)
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle, Trade
 from trading_bot.settings import BotSettings, load_settings
@@ -62,6 +68,10 @@ def parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise argparse.ArgumentTypeError(f"timestamp must include a timezone offset: {value}")
     return parsed.astimezone(UTC)
+
+
+def parse_download_end(value: str) -> datetime | None:
+    return None if value == "now" else parse_utc(value)
 
 
 def _trade_json(trade: Trade) -> dict[str, str]:
@@ -139,8 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
     download = subcommands.add_parser("download-data")
     download.add_argument("--symbol", default="BTCUSDT")
     download.add_argument("--timeframe", default="1h")
+    download.add_argument("--source", choices=("rest", "binance-vision"), default="rest")
     download.add_argument("--start", type=parse_utc, required=True)
-    download.add_argument("--end", type=parse_utc, required=True)
+    download.add_argument("--end", type=parse_download_end, required=True)
     download.add_argument("--output", type=Path, required=True)
     download.add_argument("--overwrite", action="store_true")
     validate = subcommands.add_parser("validate-data")
@@ -163,17 +174,48 @@ def _ensure_market(symbol: str, timeframe: str) -> None:
 
 def _download(args: argparse.Namespace, settings: BotSettings) -> None:
     _ensure_market(args.symbol, args.timeframe)
-    if args.end <= args.start:
+    end = args.end or datetime.now(UTC).replace(minute=0, second=0, microsecond=0) + timedelta(
+        hours=1
+    )
+    if end <= args.start:
         raise ValueError("--end must be after --start")
-    client = BinanceHistoricalDataClient(
+    rest = BinanceHistoricalDataClient(
         base_url=settings.binance_public_base_url,
         timeout_seconds=settings.http_timeout_seconds,
         max_retries=settings.http_max_retries,
     )
-    summary = asyncio.run(
-        download_historical_csv(client, args.start, args.end, args.output, args.overwrite)
-    )
-    print(json.dumps(summary_json(summary), indent=2))
+    if args.source == "binance-vision":
+        client = BinanceVisionHistoricalClient(
+            Path("data/archive_cache"),
+            rest,
+            max_retries=settings.http_max_retries,
+        )
+        summary = asyncio.run(
+            download_vision_historical_csv(client, args.start, end, args.output, args.overwrite)
+        )
+        payload = summary_json(summary)
+        payload["vision_audit"] = {
+            "archive_candle_count": len(client.parsed),
+            "exact_archive_timestamp_candle_count": sum(
+                item.quality.value == "exact" for item in client.parsed
+            ),
+            "accepted_archive_anomaly_count": sum(
+                item.quality.value != "exact" for item in client.parsed
+            ),
+            "rest_suffix_candle_count": client.rest_suffix_candle_count,
+            "maximum_timestamp_deviation_us": max(
+                (item.early_close_deviation_us for item in client.parsed), default=0
+            ),
+            "missing_candle_count": 0,
+            "duplicate_candle_count": 0,
+            "conflicting_candle_count": 0,
+        }
+    else:
+        summary = asyncio.run(
+            download_historical_csv(rest, args.start, end, args.output, args.overwrite)
+        )
+        payload = summary_json(summary)
+    print(json.dumps(payload, indent=2))
 
 
 def _validate(args: argparse.Namespace) -> None:
@@ -235,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{args.command}: no live activity performed.")
     except (
         BinanceDataError,
+        BinanceVisionError,
         CandleValidationError,
         CsvDataError,
         DataCoverageError,

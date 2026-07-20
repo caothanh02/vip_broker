@@ -12,7 +12,7 @@ Use Python 3.12 and [uv](https://docs.astral.sh/uv/): `uv sync --extra dev`, the
 
 ## Real historical data
 
-The public-only Binance Spot pipeline downloads closed `BTCUSDT` 1h candles, stores normalized UTC CSV without API keys, validates the result, and backtests it directly. Date-only download ranges mean UTC midnight; datetimes with a time require an explicit timezone. See [docs/data.md](docs/data.md). Typical commands are `make download-data DATA_START=2024-01-01 DATA_END=2024-02-01`, `make validate-data`, and `make backtest-real`. Downloaded CSV and JSON reports are ignored by Git.
+The public-only Binance Spot pipeline downloads closed `BTCUSDT` 1h candles, stores normalized UTC CSV without API keys, validates the result, and backtests it directly. Date-only download ranges mean UTC midnight; datetimes with a time require an explicit timezone. For audited long history, use `download-data --source binance-vision --start 2021-12-01 --end now --output data/raw/btcusdt_1h.csv --overwrite`; official ZIP checksums, archive timestamp exceptions, and CSV metadata checksums are all verified. See [docs/data.md](docs/data.md). Typical commands are `make download-data DATA_START=2024-01-01 DATA_END=2024-02-01`, `make validate-data`, and `make backtest-real`. Downloaded CSV and JSON reports are ignored by Git.
 
 ## ML workflow
 

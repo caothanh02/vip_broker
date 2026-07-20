@@ -1,0 +1,60 @@
+name: Pull request quality gates
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Python quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install locked development dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Verify formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy src
+
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify public CLI does not expose offline cache mode
+        shell: bash
+        run: |
+          help_output="$(uv run trading-bot download-data --help)"
+          printf '%s\n' "$help_output"
+          if grep --fixed-strings --quiet -- '--offline-cache' <<<"$help_output"; then
+            echo 'Unexpected --offline-cache option in public CLI.' >&2
+            exit 1
+          fi
