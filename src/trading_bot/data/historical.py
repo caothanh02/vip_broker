@@ -18,6 +18,7 @@ from trading_bot.data.csv_store import (
     merge_candles,
     metadata_path,
     read_candles,
+    verify_metadata_checksum,
     write_candles_atomic,
     write_json_atomic,
     write_metadata_atomic,
@@ -71,8 +72,14 @@ async def download_vision_historical_csv(
     if effective_end <= start:
         raise ValueError("no closed candles exist in the requested range")
     downloaded = await client.fetch_closed(start, effective_end)
-    merged = merge_candles(downloaded)
-    _validate_requested_coverage(merged, start, effective_end)
+    allowed_missing = {
+        missing
+        for item in getattr(client, "parsed", [])
+        if getattr(item, "interruption", None) is not None
+        for missing in item.interruption.missing_open_times
+    }
+    merged = merge_candles(downloaded, allowed_missing_open_times=allowed_missing)
+    _validate_requested_coverage(merged, start, effective_end, allowed_missing)
     _publish_vision_generation(client, output, merged, start, end, effective_end)
     return _summary(merged, 0, start, end, effective_end, output)
 
@@ -105,7 +112,13 @@ def _publish_vision_generation(
         staged_csv = staging / output.name
         staged_anomaly = staging / anomaly_path.name
         staged_metadata = staging / metadata_path(output).name
-        write_candles_atomic(staged_csv, candles)
+        allowed_missing = {
+            missing
+            for item in parsed
+            if getattr(item, "interruption", None) is not None
+            for missing in item.interruption.missing_open_times
+        }
+        write_candles_atomic(staged_csv, candles, allowed_missing_open_times=allowed_missing)
         write_json_atomic(staged_anomaly, report)
         summary = report["summary"]
         policy = report["policy"]
@@ -113,7 +126,15 @@ def _publish_vision_generation(
             raise DataCoverageError("invalid generated anomaly report")
         archive_candle_count = len(parsed)
         exact_archive_candle_count = sum(item.quality.value == "exact" for item in parsed)
-        accepted_archive_anomaly_count = archive_candle_count - exact_archive_candle_count
+        accepted_archive_anomaly_count = sum(
+            item.quality.value == "early_close_within_tolerance" for item in parsed
+        )
+        interruption_records = [
+            item for item in parsed if getattr(item, "interruption", None) is not None
+        ]
+        interruption_event_count = len(
+            {item.interruption.event_id for item in interruption_records}
+        )
         rest_suffix_candle_count = getattr(client, "rest_suffix_candle_count", None)
         if not isinstance(rest_suffix_candle_count, int) or rest_suffix_candle_count < 0:
             raise DataCoverageError("invalid REST suffix candle count")
@@ -123,6 +144,8 @@ def _publish_vision_generation(
             summary["archive_candle_count"] != archive_candle_count
             or summary["exact_archive_timestamp_candle_count"] != exact_archive_candle_count
             or summary["accepted_archive_anomaly_count"] != accepted_archive_anomaly_count
+            or summary["market_interruption_event_count"] != interruption_event_count
+            or summary["market_interruption_candle_count"] != len(interruption_records)
         ):
             raise DataCoverageError("generated anomaly report counts do not match archive records")
         metadata = {
@@ -141,6 +164,9 @@ def _publish_vision_generation(
             "archive_candle_count": archive_candle_count,
             "exact_archive_timestamp_candle_count": exact_archive_candle_count,
             "accepted_archive_anomaly_count": accepted_archive_anomaly_count,
+            "market_interruption_event_count": interruption_event_count,
+            "market_interruption_candle_count": len(interruption_records),
+            "contains_non_tradable_intervals": bool(interruption_records),
             "rest_suffix_candle_count": rest_suffix_candle_count,
             "requested_range_candle_count": _requested_count(requested_start, effective_end),
             "missing_candle_count": 0,
@@ -213,6 +239,8 @@ def _verify_staged_generation(csv_path: Path, anomaly_path: Path, metadata_file:
         raise DataCoverageError("staged anomaly checksum mismatch")
     if metadata.get("generation_id") != report.get("generation_id"):
         raise DataCoverageError("staged generation identifiers do not match")
+    if not verify_metadata_checksum(csv_path):
+        raise DataCoverageError("staged generation metadata is missing")
 
 
 def _sha256(path: Path) -> str:
@@ -304,12 +332,18 @@ def _requested_count(start: datetime, effective_end: datetime) -> int:
 
 
 def _validate_requested_coverage(
-    candles: list[Candle], start: datetime, effective_end: datetime
+    candles: list[Candle],
+    start: datetime,
+    effective_end: datetime,
+    allowed_missing_open_times: set[datetime] | None = None,
 ) -> None:
     if effective_end == start:
         return
     requested = [candle for candle in candles if start <= candle.open_time < effective_end]
-    expected = _requested_count(start, effective_end)
+    allowed_missing = {
+        value for value in (allowed_missing_open_times or set()) if start <= value < effective_end
+    }
+    expected = _requested_count(start, effective_end) - len(allowed_missing)
     if (
         len(requested) != expected
         or not requested

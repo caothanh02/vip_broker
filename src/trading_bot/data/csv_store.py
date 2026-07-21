@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from trading_bot.data.market_interruptions import KNOWN_MARKET_INTERRUPTIONS, find_interruption
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle
 
@@ -77,7 +78,9 @@ def _parse_row(row: dict[str, str]) -> Candle:
         raise CsvDataError("malformed candle CSV row") from exc
 
 
-def merge_candles(*groups: Iterable[Candle]) -> list[Candle]:
+def merge_candles(
+    *groups: Iterable[Candle], allowed_missing_open_times: set[datetime] | None = None
+) -> list[Candle]:
     by_open: dict[datetime, Candle] = {}
     for candle in (item for group in groups for item in group):
         previous = by_open.get(candle.open_time)
@@ -86,13 +89,15 @@ def merge_candles(*groups: Iterable[Candle]) -> list[Candle]:
         by_open[candle.open_time] = candle
     merged = [by_open[key] for key in sorted(by_open)]
     try:
-        validate_candles(merged)
+        validate_candles(merged, allowed_missing_open_times=allowed_missing_open_times)
     except CandleValidationError as exc:
         raise CsvDataError(f"invalid merged candles: {exc}") from exc
     return merged
 
 
-def read_candles(path: Path) -> list[Candle]:
+def read_candles(
+    path: Path, allowed_missing_open_times: set[datetime] | None = None
+) -> list[Candle]:
     if not path.exists():
         raise CsvDataError(f"CSV file does not exist: {path}")
     try:
@@ -105,7 +110,7 @@ def read_candles(path: Path) -> list[Candle]:
         raise CsvDataError(f"could not read CSV: {path}") from exc
     if not candles:
         raise CsvDataError("CSV contains no candles")
-    return merge_candles(candles)
+    return merge_candles(candles, allowed_missing_open_times=allowed_missing_open_times)
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -131,8 +136,10 @@ def _atomic_write(path: Path, content: str) -> None:
             temporary.unlink()
 
 
-def write_candles_atomic(path: Path, candles: Iterable[Candle]) -> list[Candle]:
-    normalized = merge_candles(candles)
+def write_candles_atomic(
+    path: Path, candles: Iterable[Candle], allowed_missing_open_times: set[datetime] | None = None
+) -> list[Candle]:
+    normalized = merge_candles(candles, allowed_missing_open_times=allowed_missing_open_times)
     rows = [
         {
             "open_time": _iso_utc(candle.open_time),
@@ -184,15 +191,42 @@ def verify_metadata_checksum(path: Path) -> bool:
     checksum = metadata.get("csv_sha256") if isinstance(metadata, dict) else None
     if not isinstance(checksum, str) or checksum != csv_sha256(path):
         raise CsvDataError("metadata CSV checksum mismatch")
-    _verify_anomaly_sidecar(path, metadata)
+    allowed_missing = _verify_anomaly_sidecar(path, metadata)
+    read_candles(path, allowed_missing_open_times=allowed_missing)
     return True
 
 
-def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> None:
+def verified_missing_open_times(path: Path) -> set[datetime]:
+    """Return only sidecar-verified gaps caused by an audited interruption."""
+    sidecar = metadata_path(path)
+    if not sidecar.exists():
+        return set()
+    try:
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CsvDataError("invalid metadata JSON") from exc
+    if not isinstance(metadata, dict) or metadata.get("csv_sha256") != csv_sha256(path):
+        raise CsvDataError("metadata CSV checksum mismatch")
+    return _verify_anomaly_sidecar(path, metadata)
+
+
+def contains_non_tradable_intervals(path: Path) -> bool:
+    sidecar = metadata_path(path)
+    if not sidecar.exists():
+        return False
+    verified_missing_open_times(path)
+    try:
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CsvDataError("invalid metadata JSON") from exc
+    return metadata.get("contains_non_tradable_intervals") is True
+
+
+def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> set[datetime]:
     report_name = metadata.get("anomaly_report")
     report_checksum = metadata.get("anomaly_report_sha256")
     if report_name is None and report_checksum is None:
-        return
+        return set()
     if not isinstance(report_name, str) or not isinstance(report_checksum, str):
         raise CsvDataError("metadata anomaly sidecar reference is invalid")
     report_path = path.parent / report_name
@@ -223,6 +257,10 @@ def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> None:
     records = report.get("anomalies")
     if not isinstance(records, list):
         raise CsvDataError("invalid anomaly report records")
+    interruptions = report.get("market_interruptions")
+    if not isinstance(interruptions, list):
+        raise CsvDataError("invalid market interruption records")
+    allowed_missing = _verify_market_interruptions(metadata, report, interruptions)
     accepted = sum(
         isinstance(record, dict) and record.get("accepted") is True for record in records
     )
@@ -230,7 +268,7 @@ def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> None:
         isinstance(record, dict) and record.get("accepted") is False for record in records
     )
     deviations: list[int] = []
-    for record in records:
+    for record in [*records, *interruptions]:
         if not isinstance(record, dict):
             raise CsvDataError("invalid anomaly report record")
         deviation_us = record.get("early_close_deviation_us")
@@ -257,16 +295,20 @@ def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> None:
     }
     if any(summary.get(key) != value for key, value in expected.items()):
         raise CsvDataError("anomaly report summary does not match records")
-    if exact_summary_count + accepted != archive_summary_count:
+    if exact_summary_count + accepted + len(interruptions) != archive_summary_count:
         raise CsvDataError("anomaly report archive counts are inconsistent")
     stored_count = _required_nonnegative_int(metadata, "stored_candle_count")
     archive_count = _required_nonnegative_int(metadata, "archive_candle_count")
     exact_count = _required_nonnegative_int(metadata, "exact_archive_timestamp_candle_count")
     accepted_count = _required_nonnegative_int(metadata, "accepted_archive_anomaly_count")
     rest_count = _required_nonnegative_int(metadata, "rest_suffix_candle_count")
-    if archive_count != exact_count + accepted_count or archive_count + rest_count != stored_count:
+    interruption_count = _required_nonnegative_int(metadata, "market_interruption_candle_count")
+    if (
+        archive_count != exact_count + accepted_count + interruption_count
+        or archive_count + rest_count != stored_count
+    ):
         raise CsvDataError("metadata source counts are inconsistent")
-    if len(read_candles(path)) != stored_count:
+    if len(read_candles(path, allowed_missing_open_times=allowed_missing)) != stored_count:
         raise CsvDataError("metadata stored candle count does not match CSV")
     metadata_expected = {
         "accepted_anomaly_count": accepted,
@@ -276,9 +318,76 @@ def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> None:
         "archive_candle_count": archive_summary_count,
         "exact_archive_timestamp_candle_count": exact_summary_count,
         "accepted_archive_anomaly_count": accepted,
+        "market_interruption_event_count": len(
+            {record.get("event_id") for record in interruptions if isinstance(record, dict)}
+        ),
+        "market_interruption_candle_count": len(interruptions),
+        "contains_non_tradable_intervals": bool(interruptions),
     }
     if any(metadata.get(key) != value for key, value in metadata_expected.items()):
         raise CsvDataError("metadata anomaly summary does not match report")
+    return allowed_missing
+
+
+def _verify_market_interruptions(
+    metadata: dict[str, Any], report: dict[str, Any], records: list[Any]
+) -> set[datetime]:
+    summary = report["summary"]
+    if not isinstance(summary, dict):
+        raise CsvDataError("invalid anomaly report summary")
+    event_ids: set[str] = set()
+    missing: set[datetime] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            raise CsvDataError("invalid market interruption record")
+        try:
+            event = find_interruption(
+                KNOWN_MARKET_INTERRUPTIONS,
+                archive_name=record["archive"],
+                archive_sha256=record["archive_sha256"],
+                raw_open_timestamp=record["raw_open_timestamp"],
+                raw_close_timestamp=record["raw_close_timestamp"],
+            )
+        except (KeyError, TypeError):
+            event = None
+        if (
+            event is None
+            or record.get("event_id") != event.event_id
+            or record.get("event_type") != "market_interruption"
+            or record.get("tradable") is not False
+            or record.get("market_type") != event.market_type
+            or record.get("symbol") != event.symbol
+            or record.get("timeframe") != event.timeframe
+            or record.get("open_time")
+            != _iso_utc(datetime.fromtimestamp(event.raw_open_timestamp / 1000, UTC))
+            or record.get("official_source_urls") != list(event.official_source_urls)
+            or record.get("event_start") != _iso_utc(event.event_start)
+            or record.get("event_end") != _iso_utc(event.event_end)
+            or record.get("missing_open_times")
+            != [_iso_utc(value) for value in event.missing_open_times]
+            or record.get("quality") != "known_market_interruption"
+            or record.get("accepted") is not True
+            or not isinstance(record.get("row_number"), int)
+            or record["row_number"] < 0
+            or record.get("timestamp_unit") != "milliseconds"
+            or record.get("expected_close_timestamp") != event.raw_open_timestamp + 3_599_999
+            or record.get("early_close_deviation_us")
+            != (event.raw_open_timestamp + 3_599_999 - event.raw_close_timestamp) * 1_000
+            or record.get("early_close_deviation_ms") != "1218353"
+        ):
+            raise CsvDataError("invalid market interruption identity")
+        event_ids.add(event.event_id)
+        missing.update(event.missing_open_times)
+    expected = {
+        "market_interruption_event_count": len(event_ids),
+        "market_interruption_candle_count": len(records),
+        "contains_non_tradable_intervals": bool(records),
+    }
+    if any(summary.get(key) != value for key, value in expected.items()):
+        raise CsvDataError("market interruption summary does not match records")
+    if any(metadata.get(key) != value for key, value in expected.items()):
+        raise CsvDataError("metadata market interruption summary does not match report")
+    return missing
 
 
 def _required_nonnegative_int(payload: dict[str, Any], key: str) -> int:
