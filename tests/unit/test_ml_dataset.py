@@ -203,3 +203,29 @@ def test_atomic_publish_failure_preserves_previous_generation(
     with pytest.raises(OSError, match="simulated"):
         _atomic_publish(staged, destination)
     assert (destination / "dataset.manifest.json").read_text(encoding="utf-8") == "old"
+
+
+def test_repeated_publisher_builds_are_byte_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "btc.csv"
+    source.write_text("source", encoding="utf-8")
+    source.with_name("btc.csv.metadata.json").write_text("metadata", encoding="utf-8")
+    source.with_name("btc.anomalies.json").write_text("report", encoding="utf-8")
+    metadata = {
+        "generation_id": "verified-source",
+        "effective_end": "2026-05-02T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        "trading_bot.ml.dataset._read_verified_source",
+        lambda _: ([candle(index) for index in range(240)], metadata, set()),
+    )
+    monkeypatch.setattr("trading_bot.ml.dataset._non_tradable_open_times", lambda _: set())
+    first, second = tmp_path / "first", tmp_path / "second"
+    build_ml_dataset(source, first)
+    build_ml_dataset(source, second)
+    assert sorted(path.name for path in first.iterdir()) == sorted(
+        path.name for path in second.iterdir()
+    )
+    for path in first.iterdir():
+        assert path.read_bytes() == (second / path.name).read_bytes()
