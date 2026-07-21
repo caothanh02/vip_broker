@@ -16,7 +16,10 @@ from trading_bot.data.binance_historical import BinanceDataError, BinanceHistori
 from trading_bot.data.binance_vision import BinanceVisionError, BinanceVisionHistoricalClient
 from trading_bot.data.csv_store import (
     CsvDataError,
+    contains_non_tradable_intervals,
+    metadata_path,
     read_candles,
+    verified_missing_open_times,
     verify_metadata_checksum,
     write_json_atomic,
 )
@@ -194,21 +197,26 @@ def _download(args: argparse.Namespace, settings: BotSettings) -> None:
             download_vision_historical_csv(client, args.start, end, args.output, args.overwrite)
         )
         payload = summary_json(summary)
+        if not verify_metadata_checksum(args.output):
+            raise DataCoverageError("Vision publisher did not create verified metadata")
+        try:
+            metadata = json.loads(metadata_path(args.output).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DataCoverageError("could not read verified Vision metadata") from exc
         payload["vision_audit"] = {
-            "archive_candle_count": len(client.parsed),
-            "exact_archive_timestamp_candle_count": sum(
-                item.quality.value == "exact" for item in client.parsed
-            ),
-            "accepted_archive_anomaly_count": sum(
-                item.quality.value != "exact" for item in client.parsed
-            ),
-            "rest_suffix_candle_count": client.rest_suffix_candle_count,
-            "maximum_timestamp_deviation_us": max(
-                (item.early_close_deviation_us for item in client.parsed), default=0
-            ),
-            "missing_candle_count": 0,
-            "duplicate_candle_count": 0,
-            "conflicting_candle_count": 0,
+            key: metadata[key]
+            for key in (
+                "archive_candle_count",
+                "exact_archive_timestamp_candle_count",
+                "accepted_archive_anomaly_count",
+                "market_interruption_event_count",
+                "market_interruption_candle_count",
+                "missing_candle_count",
+                "contains_non_tradable_intervals",
+                "rest_suffix_candle_count",
+                "duplicate_candle_count",
+                "conflicting_candle_count",
+            )
         }
     else:
         summary = asyncio.run(
@@ -219,15 +227,21 @@ def _download(args: argparse.Namespace, settings: BotSettings) -> None:
 
 
 def _validate(args: argparse.Namespace) -> None:
-    candles = read_candles(args.input)
-    if not verify_metadata_checksum(args.input):
+    metadata_verified = verify_metadata_checksum(args.input)
+    missing = verified_missing_open_times(args.input) if metadata_verified else set()
+    candles = read_candles(args.input, allowed_missing_open_times=missing)
+    if not metadata_verified:
         print("warning: metadata checksum sidecar is missing", file=sys.stderr)
     max_age = timedelta(hours=args.max_age_hours) if args.max_age_hours is not None else None
-    validate_candles(candles, max_age=max_age)
+    validate_candles(candles, max_age=max_age, allowed_missing_open_times=missing)
     print(
         json.dumps(
             {
-                "status": "valid",
+                "status": (
+                    "valid_with_market_interruptions"
+                    if contains_non_tradable_intervals(args.input)
+                    else "valid"
+                ),
                 "candle_count": len(candles),
                 "first_open": candles[0].open_time.isoformat(),
                 "last_close": candles[-1].close_time.isoformat(),
@@ -239,6 +253,10 @@ def _validate(args: argparse.Namespace) -> None:
 
 
 def _backtest(args: argparse.Namespace, settings: BotSettings) -> None:
+    if not args.fixture and contains_non_tradable_intervals(args.input):
+        raise DataCoverageError(
+            "backtest refuses datasets containing non-tradable market interruption intervals"
+        )
     candles = fixture() if args.fixture else read_candles(args.input)
     validate_candles(candles)
     result = CandleBacktester(settings).run(candles)

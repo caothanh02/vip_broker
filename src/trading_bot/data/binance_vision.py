@@ -19,11 +19,16 @@ import httpx
 
 from trading_bot.data.binance_historical import BinanceHistoricalDataClient
 from trading_bot.data.csv_store import merge_candles
+from trading_bot.data.market_interruptions import (
+    KNOWN_MARKET_INTERRUPTIONS,
+    KnownMarketInterruption,
+    find_interruption,
+)
 from trading_bot.data.time_ranges import validate_hour_aligned_range
 from trading_bot.domain.models import Candle
 
 POLICY_NAME = "verified-binance-vision-early-close"
-POLICY_VERSION = "1.0"
+POLICY_VERSION = "1.1"
 MAX_EARLY_CLOSE_MS = 60_000
 MAX_EARLY_CLOSE_US = 60_000_000
 BINANCE_VISION = "https://data.binance.vision/data/spot"
@@ -38,6 +43,7 @@ class ArchiveTimestampQuality(StrEnum):
     INVALID_EARLY_CLOSE = "invalid_early_close"
     LATE_CLOSE = "late_close"
     INVALID_OPEN_ALIGNMENT = "invalid_open_alignment"
+    KNOWN_MARKET_INTERRUPTION = "known_market_interruption"
 
 
 class ArchiveTimestampPolicyError(ValueError):
@@ -61,6 +67,7 @@ class ParsedArchiveCandle:
     archive_sha256: str
     row_number: int
     adjacent_continuity_verified: bool = False
+    interruption: KnownMarketInterruption | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +84,7 @@ def parse_verified_archive_kline(
     archive_sha256: str,
     row_number: int,
     checksum_verified: bool,
+    interruptions: tuple[KnownMarketInterruption, ...] = KNOWN_MARKET_INTERRUPTIONS,
 ) -> ParsedArchiveCandle:
     """Parse one official, checksum-verified BTCUSDT Spot 1h archive row.
 
@@ -100,7 +108,21 @@ def parse_verified_archive_kline(
         raise ArchiveTimestampPolicyError(
             f"row open time is outside named {period.cadence} archive period"
         )
-    expected, quality, deviation_us = _timestamp_policy(open_timestamp, close_timestamp, unit)
+    interruption = find_interruption(
+        interruptions,
+        archive_name=archive_name,
+        archive_sha256=archive_sha256,
+        raw_open_timestamp=open_timestamp,
+        raw_close_timestamp=close_timestamp,
+    )
+    try:
+        expected, quality, deviation_us = _timestamp_policy(open_timestamp, close_timestamp, unit)
+    except ArchiveTimestampPolicyError:
+        if interruption is None:
+            raise
+        expected, quality, deviation_us = _known_interruption_timestamp_policy(
+            open_timestamp, close_timestamp, unit
+        )
     try:
         open_, high, low, close, volume = (Decimal(row[index]) for index in range(1, 6))
     except (InvalidOperation, ValueError) as exc:
@@ -133,6 +155,8 @@ def parse_verified_archive_kline(
         archive_name,
         archive_sha256,
         row_number,
+        False,
+        interruption,
     )
 
 
@@ -187,6 +211,25 @@ def _timestamp_policy(
     return expected, quality, early * (1_000 if unit == "milliseconds" else 1)
 
 
+def _known_interruption_timestamp_policy(
+    open_timestamp: int, close_timestamp: int, unit: Literal["milliseconds", "microseconds"]
+) -> tuple[int, ArchiveTimestampQuality, int]:
+    """Accept only an already identity-matched, early-close interruption row."""
+    scale = 1_000 if unit == "milliseconds" else 1_000_000
+    if open_timestamp % (3_600 * scale):
+        raise ArchiveTimestampPolicyError("invalid_open_alignment")
+    expected = open_timestamp + 3_600 * scale - 1
+    if close_timestamp > expected:
+        raise ArchiveTimestampPolicyError(
+            _message(ArchiveTimestampQuality.LATE_CLOSE, expected, close_timestamp)
+        )
+    return (
+        expected,
+        ArchiveTimestampQuality.KNOWN_MARKET_INTERRUPTION,
+        (expected - close_timestamp) * (1_000 if unit == "milliseconds" else 1),
+    )
+
+
 def parse_archive_period(archive_name: str) -> ArchivePeriod:
     """Parse the exact official filename and derive its UTC half-open period."""
     monthly = _MONTHLY_ARCHIVE.fullmatch(archive_name)
@@ -223,9 +266,11 @@ def _message(quality: ArchiveTimestampQuality, expected: int, actual: int) -> st
 
 def anomaly_report(parsed: Sequence[ParsedArchiveCandle]) -> dict[str, object]:
     """Create a deterministic, path-free audit document for accepted archive anomalies."""
-    anomalies = [item for item in parsed if item.quality is not ArchiveTimestampQuality.EXACT]
-    if any(not item.adjacent_continuity_verified for item in anomalies):
+    accepted = [item for item in parsed if item.quality is not ArchiveTimestampQuality.EXACT]
+    if any(not item.adjacent_continuity_verified for item in accepted):
         raise BinanceVisionError("anomaly continuity has not been verified")
+    anomalies = [item for item in accepted if item.interruption is None]
+    interruptions = [item for item in accepted if item.interruption is not None]
     records = [
         {
             "archive": item.archive_name,
@@ -245,6 +290,39 @@ def anomaly_report(parsed: Sequence[ParsedArchiveCandle]) -> dict[str, object]:
         }
         for item in anomalies
     ]
+    incident_records = [
+        {
+            "event_id": item.interruption.event_id,
+            "event_type": "market_interruption",
+            "tradable": False,
+            "market_type": item.interruption.market_type,
+            "symbol": item.interruption.symbol,
+            "timeframe": item.interruption.timeframe,
+            "official_source_urls": list(item.interruption.official_source_urls),
+            "archive": item.archive_name,
+            "archive_sha256": item.archive_sha256,
+            "row_number": item.row_number,
+            "open_time": item.candle.open_time.isoformat().replace("+00:00", "Z"),
+            "raw_open_timestamp": item.raw_open_timestamp,
+            "raw_close_timestamp": item.raw_close_timestamp,
+            "expected_close_timestamp": item.expected_close_timestamp,
+            "timestamp_unit": item.timestamp_unit,
+            "early_close_deviation_us": item.early_close_deviation_us,
+            "early_close_deviation_ms": _milliseconds_string(item.early_close_deviation_us),
+            "quality": item.quality.value,
+            "event_start": item.interruption.event_start.isoformat().replace("+00:00", "Z"),
+            "event_end": item.interruption.event_end.isoformat().replace("+00:00", "Z"),
+            "missing_open_times": [
+                value.isoformat().replace("+00:00", "Z")
+                for value in item.interruption.missing_open_times
+            ],
+            "accepted": True,
+            "adjacent_continuity_verified": True,
+            "policy_version": POLICY_VERSION,
+        }
+        for item in interruptions
+        if item.interruption is not None
+    ]
     return {
         "policy": {
             "name": POLICY_NAME,
@@ -257,17 +335,25 @@ def anomaly_report(parsed: Sequence[ParsedArchiveCandle]) -> dict[str, object]:
         },
         "summary": {
             "archive_candle_count": len(parsed),
-            "exact_archive_timestamp_candle_count": len(parsed) - len(records),
+            "exact_archive_timestamp_candle_count": len(parsed)
+            - len(records)
+            - len(incident_records),
             "accepted_archive_anomaly_count": len(records),
+            "market_interruption_event_count": len(
+                {record["event_id"] for record in incident_records}
+            ),
+            "market_interruption_candle_count": len(incident_records),
+            "contains_non_tradable_intervals": bool(incident_records),
             "rejected_timestamp_anomalies": 0,
             "maximum_observed_early_close_us": max(
-                (item.early_close_deviation_us for item in anomalies), default=0
+                (item.early_close_deviation_us for item in accepted), default=0
             ),
             "maximum_observed_early_close_ms": _milliseconds_string(
-                max((item.early_close_deviation_us for item in anomalies), default=0)
+                max((item.early_close_deviation_us for item in accepted), default=0)
             ),
         },
         "anomalies": records,
+        "market_interruptions": incident_records,
     }
 
 
@@ -288,6 +374,7 @@ class BinanceVisionHistoricalClient:
         max_retries: int = 3,
         backoff_seconds: float = 0.25,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        interruptions: tuple[KnownMarketInterruption, ...] = KNOWN_MARKET_INTERRUPTIONS,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
@@ -299,6 +386,7 @@ class BinanceVisionHistoricalClient:
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
         self.sleep = sleep
+        self.interruptions = interruptions
         self.checksum_verification_mode = "official_online"
         self.parsed: list[ParsedArchiveCandle] = []
         self.archive_urls: list[str] = []
@@ -307,6 +395,7 @@ class BinanceVisionHistoricalClient:
         self.daily_archives: list[str] = []
         self.rest_suffix: tuple[datetime, datetime] | None = None
         self.rest_suffix_candle_count = 0
+        self.non_tradable_intervals: tuple[KnownMarketInterruption, ...] = ()
 
     async def fetch_closed(self, start_time: datetime, end_time: datetime) -> list[Candle]:
         start, end = validate_hour_aligned_range(start_time, end_time)
@@ -318,6 +407,7 @@ class BinanceVisionHistoricalClient:
         self.daily_archives = []
         self.rest_suffix = None
         self.rest_suffix_candle_count = 0
+        self.non_tradable_intervals = ()
         archive_end = _month_start(closed_end)
         candles: list[Candle] = []
         cursor = _month_start(start)
@@ -343,14 +433,16 @@ class BinanceVisionHistoricalClient:
                 candles.extend(rest_candles)
                 self.rest_suffix = (suffix_start, closed_end)
                 self.rest_suffix_candle_count = len(rest_candles)
+        allowed_missing = _allowed_missing_open_times(self.parsed)
         try:
-            merged = merge_candles(candles)
+            merged = merge_candles(candles, allowed_missing_open_times=allowed_missing)
         except ValueError as exc:
             raise BinanceVisionError(str(exc)) from exc
         verified = _verify_anomaly_continuity(self.parsed, merged)
         result = [candle for candle in merged if start <= candle.open_time < closed_end]
-        _validate_continuity(result, start, closed_end)
+        _validate_continuity(result, start, closed_end, allowed_missing)
         self.parsed = [item for item in verified if start <= item.candle.open_time < closed_end]
+        self.non_tradable_intervals = _encountered_interruptions(self.parsed)
         if len(self.parsed) + self.rest_suffix_candle_count != len(result):
             raise BinanceVisionError("archive and REST source counts do not match stored coverage")
         return result
@@ -379,7 +471,7 @@ class BinanceVisionHistoricalClient:
         name = f"BTCUSDT-1h-{stamp}.zip"
         relative = f"{cadence}/klines/BTCUSDT/1h/{name}"
         archive, checksum = await self._verified_bytes(relative, allow_missing)
-        parsed = _parse_archive(archive, name, checksum)
+        parsed = _parse_archive(archive, name, checksum, self.interruptions)
         self.parsed.extend(parsed)
         self.archive_urls.append(f"{self.base_url}/{relative}")
         self.archive_checksums[name] = checksum
@@ -453,7 +545,12 @@ class BinanceVisionHistoricalClient:
         await asyncio.sleep(delay)
 
 
-def _parse_archive(data: bytes, name: str, checksum: str) -> list[ParsedArchiveCandle]:
+def _parse_archive(
+    data: bytes,
+    name: str,
+    checksum: str,
+    interruptions: tuple[KnownMarketInterruption, ...] = KNOWN_MARKET_INTERRUPTIONS,
+) -> list[ParsedArchiveCandle]:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             names = archive.namelist()
@@ -479,6 +576,7 @@ def _parse_archive(data: bytes, name: str, checksum: str) -> list[ParsedArchiveC
                     archive_sha256=checksum,
                     row_number=index,
                     checksum_verified=True,
+                    interruptions=interruptions,
                 )
             )
         except ArchiveTimestampPolicyError as exc:
@@ -491,17 +589,22 @@ def _parse_archive(data: bytes, name: str, checksum: str) -> list[ParsedArchiveC
 def _validate_archive_coverage(
     parsed: Sequence[ParsedArchiveCandle], period: ArchivePeriod
 ) -> None:
-    expected_count = int((period.end - period.start) / timedelta(hours=1))
+    allowed_missing = _allowed_missing_open_times(parsed)
+    expected_count = int((period.end - period.start) / timedelta(hours=1)) - len(allowed_missing)
     if len(parsed) != expected_count:
         raise BinanceVisionError(
             f"{period.cadence} archive has {len(parsed)} rows; expected {expected_count}"
         )
     expected = period.start
     for item in parsed:
+        while expected in allowed_missing:
+            expected += timedelta(hours=1)
         if item.candle.open_time != expected:
             raise BinanceVisionError(
                 f"{period.cadence} archive coverage error at {expected.isoformat()}"
             )
+        expected += timedelta(hours=1)
+    while expected in allowed_missing:
         expected += timedelta(hours=1)
     if expected != period.end:
         raise BinanceVisionError(f"{period.cadence} archive does not end at its named period")
@@ -519,12 +622,18 @@ def _next_month(value: datetime) -> datetime:
     )
 
 
-def _validate_continuity(candles: Sequence[Candle], start: datetime, end: datetime) -> None:
+def _validate_continuity(
+    candles: Sequence[Candle], start: datetime, end: datetime, allowed_missing: set[datetime]
+) -> None:
     expected = start
     for candle in candles:
+        while expected in allowed_missing:
+            expected += timedelta(hours=1)
         if candle.open_time != expected:
             raise BinanceVisionError(f"missing candle at {expected.isoformat()}")
         expected = candle.close_time
+    while expected in allowed_missing:
+        expected += timedelta(hours=1)
     if expected != end:
         raise BinanceVisionError(f"missing candle at {expected.isoformat()}")
 
@@ -540,14 +649,38 @@ def _verify_anomaly_continuity(
             verified.append(item)
             continue
         open_time = item.candle.open_time
-        previous = open_time - timedelta(hours=1)
-        following = open_time + timedelta(hours=1)
+        if item.interruption is not None:
+            previous = open_time - timedelta(hours=1)
+            following = max(item.interruption.missing_open_times) + timedelta(hours=1)
+        else:
+            previous = open_time - timedelta(hours=1)
+            following = open_time + timedelta(hours=1)
         if previous not in available or following not in available:
             raise BinanceVisionError(
                 f"cannot verify adjacent continuity for anomaly at {open_time.isoformat()}"
             )
         verified.append(replace(item, adjacent_continuity_verified=True))
     return verified
+
+
+def _allowed_missing_open_times(parsed: Sequence[ParsedArchiveCandle]) -> set[datetime]:
+    return {
+        missing
+        for item in parsed
+        if item.interruption is not None
+        for missing in item.interruption.missing_open_times
+    }
+
+
+def _encountered_interruptions(
+    parsed: Sequence[ParsedArchiveCandle],
+) -> tuple[KnownMarketInterruption, ...]:
+    by_event = {
+        item.interruption.event_id: item.interruption
+        for item in parsed
+        if item.interruption is not None
+    }
+    return tuple(by_event[key] for key in sorted(by_event))
 
 
 def _last_close(candles: Sequence[Candle]) -> datetime | None:

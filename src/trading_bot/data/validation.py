@@ -9,10 +9,15 @@ class CandleValidationError(ValueError):
     pass
 
 
-def validate_candles(candles: list[Candle], max_age: timedelta | None = None) -> None:
+def validate_candles(
+    candles: list[Candle],
+    max_age: timedelta | None = None,
+    allowed_missing_open_times: set[datetime] | None = None,
+) -> None:
     if not candles:
         raise CandleValidationError("no candles")
     seen = set()
+    allowed_missing = allowed_missing_open_times or set()
     previous = None
     interval = timedelta(hours=1)
     for candle in candles:
@@ -48,7 +53,11 @@ def validate_candles(candles: list[Candle], max_age: timedelta | None = None) ->
         ):
             raise CandleValidationError("invalid OHLC")
         if previous and candle.open_time - previous != interval:
-            raise CandleValidationError("data gap or bad interval")
+            expected = previous + interval
+            while expected < candle.open_time and expected in allowed_missing:
+                expected += interval
+            if expected != candle.open_time:
+                raise CandleValidationError("data gap or bad interval")
         seen.add(candle.open_time)
         previous = candle.open_time
     if max_age is not None and datetime.now(UTC) - candles[-1].close_time > max_age:
