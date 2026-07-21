@@ -31,6 +31,7 @@ from trading_bot.data.historical import (
 )
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle, Trade
+from trading_bot.ml.dataset import DatasetBuildError, build_ml_dataset
 from trading_bot.settings import BotSettings, load_settings
 
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
@@ -165,7 +166,10 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--input", type=Path)
     source.add_argument("--fixture", action="store_true")
     backtest.add_argument("--output", type=Path, required=True)
-    for name in ("build-dataset", "train", "evaluate", "walk-forward", "dry-run", "report"):
+    dataset = subcommands.add_parser("build-dataset")
+    dataset.add_argument("--input", type=Path, required=True)
+    dataset.add_argument("--output-dir", type=Path, required=True)
+    for name in ("train", "evaluate", "walk-forward", "dry-run", "report"):
         subcommands.add_parser(name)
     return parser
 
@@ -276,6 +280,25 @@ def _backtest(args: argparse.Namespace, settings: BotSettings) -> None:
     print(json.dumps({"output": str(args.output), "metrics": result.metrics()}, indent=2))
 
 
+def _build_dataset(args: argparse.Namespace) -> None:
+    summary = build_ml_dataset(args.input, args.output_dir)
+    print(
+        json.dumps(
+            {
+                "dataset_generation_id": summary.generation_id,
+                "source_generation_id": summary.source_generation_id,
+                "source_candle_count": summary.source_candle_count,
+                "segment_count": summary.segment_count,
+                "candidate_counts": summary.candidate_counts,
+                "development_label_counts": summary.label_counts,
+                "excluded_row_counts": summary.exclusion_counts,
+                "output_file_sha256": summary.output_checksums,
+            },
+            indent=2,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -287,6 +310,8 @@ def main(argv: list[str] | None = None) -> int:
             _validate(args)
         elif args.command == "backtest":
             _backtest(args, settings)
+        elif args.command == "build-dataset":
+            _build_dataset(args)
         elif args.command == "dry-run":
             print(
                 "Dry-run safety check complete: paper broker only; no exchange orders can be sent."
@@ -299,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
         CandleValidationError,
         CsvDataError,
         DataCoverageError,
+        DatasetBuildError,
         ValueError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)

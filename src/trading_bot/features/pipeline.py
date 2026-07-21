@@ -52,8 +52,8 @@ def build_features(candles: list[Candle]) -> pd.DataFrame:
     close, high, low, volume = frame.close, frame.high, frame.low, frame.volume
     for span, name in [(20, "ema20"), (50, "ema50"), (200, "ema200")]:
         frame[name] = close.ewm(span=span, adjust=False, min_periods=span).mean()
-    frame["ema20_slope"] = frame.ema20.pct_change()
-    frame["ema50_slope"] = frame.ema50.pct_change()
+    frame["ema20_slope"] = frame.ema20.pct_change(fill_method=None)
+    frame["ema50_slope"] = frame.ema50.pct_change(fill_method=None)
     frame["ema20_ema50_distance"] = (frame.ema20 - frame.ema50) / close
     frame["close_ema200_distance"] = (close - frame.ema200) / close
     delta = close.diff()
@@ -81,12 +81,12 @@ def build_features(candles: list[Candle]) -> pd.DataFrame:
     mid = close.rolling(20).mean()
     std = close.rolling(20).std()
     frame["bb_width"] = (4 * std) / mid
-    frame["rolling_volatility_24"] = close.pct_change().rolling(24).std()
+    frame["rolling_volatility_24"] = close.pct_change(fill_method=None).rolling(24).std()
     frame["volume_sma20"] = volume.rolling(20).mean()
     frame["volume_ratio"] = volume / frame.volume_sma20
-    frame["volume_change"] = volume.pct_change()
+    frame["volume_change"] = volume.pct_change(fill_method=None)
     for n in [1, 3, 6, 12, 24]:
-        frame[f"return_{n}"] = close.pct_change(n)
+        frame[f"return_{n}"] = close.pct_change(n, fill_method=None)
     frame["hour_utc"] = frame.index.hour.astype(float)
     frame["day_of_week"] = frame.index.dayofweek.astype(float)
     frame["schema_version"] = FEATURE_SCHEMA_VERSION
