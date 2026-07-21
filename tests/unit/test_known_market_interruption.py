@@ -4,7 +4,9 @@ import asyncio
 import io
 import json
 import zipfile
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -23,8 +25,13 @@ from trading_bot.data.csv_store import (
     read_candles,
     verified_missing_open_times,
     verify_metadata_checksum,
+    write_candles_atomic,
 )
-from trading_bot.data.historical import download_vision_historical_csv
+from trading_bot.data.historical import (
+    DataCoverageError,
+    _publish_vision_generation,
+    download_vision_historical_csv,
+)
 from trading_bot.data.market_interruptions import KNOWN_MARKET_INTERRUPTIONS
 from trading_bot.domain.models import Candle
 
@@ -169,6 +176,11 @@ def test_verified_dataset_records_non_tradable_event_and_backtest_refuses(tmp_pa
     report = json.loads(output.with_suffix(".anomalies.json").read_text(encoding="utf-8"))
     assert metadata["contains_non_tradable_intervals"] is True
     assert metadata["market_interruption_event_count"] == 1
+    assert metadata["missing_candle_count"] == 1
+    assert (
+        metadata["stored_candle_count"] + metadata["missing_candle_count"]
+        == metadata["requested_range_candle_count"]
+    )
     assert report["market_interruptions"][0]["tradable"] is False
     assert verify_metadata_checksum(output) is True
     assert verified_missing_open_times(output) == {datetime(2023, 3, 24, 13, tzinfo=UTC)}
@@ -177,6 +189,141 @@ def test_verified_dataset_records_non_tradable_event_and_backtest_refuses(tmp_pa
     assert (
         main(["backtest", "--input", str(output), "--output", str(tmp_path / "report.json")]) == 1
     )
+
+
+def _metadata(output: Path) -> dict[str, object]:
+    return json.loads(output.with_name("btc.csv.metadata.json").read_text(encoding="utf-8"))
+
+
+def _write_metadata(output: Path, metadata: dict[str, object]) -> None:
+    output.with_name("btc.csv.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def test_publisher_rejects_requested_count_invariant_before_publish(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    interrupted = replace(_parsed(1), adjacent_continuity_verified=True)
+    client = _InterruptionClient([_parsed(0), interrupted])
+    with pytest.raises(DataCoverageError, match="stored and audited missing"):
+        _publish_vision_generation(
+            client,
+            output,
+            [item.candle for item in client.parsed],
+            BASE,
+            BASE + timedelta(hours=4),
+            BASE + timedelta(hours=4),
+            {datetime(2023, 3, 24, 13, tzinfo=UTC)},
+        )
+    assert not output.exists()
+
+
+def test_validator_rejects_csv_restoring_verified_missing_candle(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    asyncio.run(
+        download_vision_historical_csv(
+            _audited_client(), BASE, BASE + timedelta(hours=4), output, True
+        )
+    )
+    candles = read_candles(output, allowed_missing_open_times=verified_missing_open_times(output))
+    restored = Candle(
+        datetime(2023, 3, 24, 13, tzinfo=UTC),
+        datetime(2023, 3, 24, 14, tzinfo=UTC),
+        "BTC/USDT",
+        "1h",
+        Decimal("100"),
+        Decimal("101"),
+        Decimal("99"),
+        Decimal("100"),
+        Decimal("1"),
+        True,
+    )
+    write_candles_atomic(output, [*candles, restored])
+    metadata = _metadata(output)
+    metadata["csv_sha256"] = csv_sha256(output)
+    _write_metadata(output, metadata)
+    with pytest.raises(CsvDataError, match="gaps"):
+        verify_metadata_checksum(output)
+
+
+@pytest.mark.parametrize("metadata_field", ["requested_range_candle_count", "stored_candle_count"])
+def test_validator_rejects_tampered_requested_coverage_counts(
+    tmp_path: Path, metadata_field: str
+) -> None:
+    output = tmp_path / "btc.csv"
+    asyncio.run(
+        download_vision_historical_csv(
+            _audited_client(), BASE, BASE + timedelta(hours=4), output, True
+        )
+    )
+    metadata = _metadata(output)
+    metadata[metadata_field] = int(metadata[metadata_field]) + 1
+    _write_metadata(output, metadata)
+    with pytest.raises(CsvDataError, match="counts"):
+        verify_metadata_checksum(output)
+
+
+def test_validator_rejects_csv_candle_outside_requested_range(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    asyncio.run(
+        download_vision_historical_csv(
+            _audited_client(), BASE, BASE + timedelta(hours=4), output, True
+        )
+    )
+    candles = read_candles(output, allowed_missing_open_times=verified_missing_open_times(output))
+    outside = Candle(
+        BASE + timedelta(hours=4),
+        BASE + timedelta(hours=5),
+        "BTC/USDT",
+        "1h",
+        Decimal("100"),
+        Decimal("101"),
+        Decimal("99"),
+        Decimal("100"),
+        Decimal("1"),
+        True,
+    )
+    write_candles_atomic(
+        output, [*candles, outside], allowed_missing_open_times={BASE + timedelta(hours=2)}
+    )
+    metadata = _metadata(output)
+    metadata["csv_sha256"] = csv_sha256(output)
+    _write_metadata(output, metadata)
+    with pytest.raises(CsvDataError, match="outside requested range"):
+        verify_metadata_checksum(output)
+
+
+def test_cli_audit_counts_are_read_from_verified_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "btc.csv"
+    monkeypatch.setattr(
+        "trading_bot.cli.BinanceVisionHistoricalClient", lambda *args, **kwargs: _audited_client()
+    )
+    assert (
+        main(
+            [
+                "download-data",
+                "--source",
+                "binance-vision",
+                "--start",
+                "2023-03-24T11:00:00Z",
+                "--end",
+                "2023-03-24T15:00:00Z",
+                "--output",
+                str(output),
+                "--overwrite",
+            ]
+        )
+        == 0
+    )
+    emitted = json.loads(capsys.readouterr().out)["vision_audit"]
+    metadata = _metadata(output)
+    assert emitted["accepted_archive_anomaly_count"] == 0
+    assert emitted["market_interruption_event_count"] == 1
+    assert emitted["market_interruption_candle_count"] == 1
+    assert emitted["missing_candle_count"] == 1
+    assert emitted["contains_non_tradable_intervals"] is True
+    for key, value in emitted.items():
+        assert value == metadata[key]
 
 
 @pytest.mark.parametrize(

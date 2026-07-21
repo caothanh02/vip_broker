@@ -308,8 +308,8 @@ def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> set[datetim
         or archive_count + rest_count != stored_count
     ):
         raise CsvDataError("metadata source counts are inconsistent")
-    if len(read_candles(path, allowed_missing_open_times=allowed_missing)) != stored_count:
-        raise CsvDataError("metadata stored candle count does not match CSV")
+    candles = read_candles(path, allowed_missing_open_times=allowed_missing)
+    _verify_requested_coverage(metadata, candles, allowed_missing)
     metadata_expected = {
         "accepted_anomaly_count": accepted,
         "rejected_anomaly_count": rejected,
@@ -327,6 +327,54 @@ def _verify_anomaly_sidecar(path: Path, metadata: dict[str, Any]) -> set[datetim
     if any(metadata.get(key) != value for key, value in metadata_expected.items()):
         raise CsvDataError("metadata anomaly summary does not match report")
     return allowed_missing
+
+
+def _verify_requested_coverage(
+    metadata: dict[str, Any], candles: list[Candle], allowed_missing: set[datetime]
+) -> None:
+    requested_start = _required_utc_hour(metadata, "requested_start")
+    effective_end = _required_utc_hour(metadata, "effective_end")
+    if effective_end <= requested_start:
+        raise CsvDataError("invalid requested metadata range")
+    expected_open_times = _hourly_open_times(requested_start, effective_end)
+    actual_open_times = {candle.open_time for candle in candles}
+    unexpected = actual_open_times - expected_open_times
+    actual_missing = expected_open_times - actual_open_times
+    if any(value not in expected_open_times for value in allowed_missing):
+        raise CsvDataError("verified missing timestamp is outside requested range")
+    if unexpected:
+        raise CsvDataError("CSV contains timestamp outside requested range")
+    if actual_missing != allowed_missing:
+        raise CsvDataError("CSV gaps do not match verified market interruption records")
+    requested_count = _required_nonnegative_int(metadata, "requested_range_candle_count")
+    stored_count = _required_nonnegative_int(metadata, "stored_candle_count")
+    missing_count = _required_nonnegative_int(metadata, "missing_candle_count")
+    if (
+        requested_count != len(expected_open_times)
+        or stored_count != len(actual_open_times)
+        or missing_count != len(actual_missing)
+        or stored_count + missing_count != requested_count
+    ):
+        raise CsvDataError("metadata requested coverage counts are inconsistent")
+
+
+def _required_utc_hour(payload: dict[str, Any], key: str) -> datetime:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        raise CsvDataError(f"invalid {key}")
+    parsed = _parse_time(value, key)
+    if parsed.minute or parsed.second or parsed.microsecond:
+        raise CsvDataError(f"{key} must be UTC hour-aligned")
+    return parsed
+
+
+def _hourly_open_times(start: datetime, end: datetime) -> set[datetime]:
+    result: set[datetime] = set()
+    cursor = start
+    while cursor < end:
+        result.add(cursor)
+        cursor += timedelta(hours=1)
+    return result
 
 
 def _verify_market_interruptions(

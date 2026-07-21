@@ -72,15 +72,12 @@ async def download_vision_historical_csv(
     if effective_end <= start:
         raise ValueError("no closed candles exist in the requested range")
     downloaded = await client.fetch_closed(start, effective_end)
-    allowed_missing = {
-        missing
-        for item in getattr(client, "parsed", [])
-        if getattr(item, "interruption", None) is not None
-        for missing in item.interruption.missing_open_times
-    }
+    allowed_missing = _audited_missing_open_times(
+        getattr(client, "parsed", []), start, effective_end
+    )
     merged = merge_candles(downloaded, allowed_missing_open_times=allowed_missing)
     _validate_requested_coverage(merged, start, effective_end, allowed_missing)
-    _publish_vision_generation(client, output, merged, start, end, effective_end)
+    _publish_vision_generation(client, output, merged, start, end, effective_end, allowed_missing)
     return _summary(merged, 0, start, end, effective_end, output)
 
 
@@ -91,6 +88,7 @@ def _publish_vision_generation(
     requested_start: datetime,
     requested_end: datetime,
     effective_end: datetime,
+    missing_open_times: set[datetime],
 ) -> None:
     """Stage every artifact, then use metadata as the final commit marker."""
     from trading_bot.data.binance_vision import anomaly_report
@@ -112,13 +110,7 @@ def _publish_vision_generation(
         staged_csv = staging / output.name
         staged_anomaly = staging / anomaly_path.name
         staged_metadata = staging / metadata_path(output).name
-        allowed_missing = {
-            missing
-            for item in parsed
-            if getattr(item, "interruption", None) is not None
-            for missing in item.interruption.missing_open_times
-        }
-        write_candles_atomic(staged_csv, candles, allowed_missing_open_times=allowed_missing)
+        write_candles_atomic(staged_csv, candles, allowed_missing_open_times=missing_open_times)
         write_json_atomic(staged_anomaly, report)
         summary = report["summary"]
         policy = report["policy"]
@@ -140,6 +132,9 @@ def _publish_vision_generation(
             raise DataCoverageError("invalid REST suffix candle count")
         if archive_candle_count + rest_suffix_candle_count != len(candles):
             raise DataCoverageError("archive and REST counts do not match stored candle count")
+        requested_range_candle_count = _requested_count(requested_start, effective_end)
+        if len(candles) + len(missing_open_times) != requested_range_candle_count:
+            raise DataCoverageError("stored and audited missing candle counts do not match range")
         if (
             summary["archive_candle_count"] != archive_candle_count
             or summary["exact_archive_timestamp_candle_count"] != exact_archive_candle_count
@@ -168,8 +163,8 @@ def _publish_vision_generation(
             "market_interruption_candle_count": len(interruption_records),
             "contains_non_tradable_intervals": bool(interruption_records),
             "rest_suffix_candle_count": rest_suffix_candle_count,
-            "requested_range_candle_count": _requested_count(requested_start, effective_end),
-            "missing_candle_count": 0,
+            "requested_range_candle_count": requested_range_candle_count,
+            "missing_candle_count": len(missing_open_times),
             "duplicate_candle_count": 0,
             "conflicting_candle_count": 0,
             "source_archives": list(getattr(client, "archive_urls", [])),
@@ -351,6 +346,20 @@ def _validate_requested_coverage(
         or requested[-1].close_time != effective_end
     ):
         raise DataCoverageError("incomplete requested range; use --overwrite or retry the download")
+
+
+def _audited_missing_open_times(
+    parsed: object, start: datetime, effective_end: datetime
+) -> set[datetime]:
+    if not isinstance(parsed, list):
+        raise DataCoverageError("Binance Vision client is missing archive audit records")
+    return {
+        missing
+        for item in parsed
+        if getattr(item, "interruption", None) is not None
+        for missing in item.interruption.missing_open_times
+        if start <= missing < effective_end
+    }
 
 
 def _summary(

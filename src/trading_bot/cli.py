@@ -17,6 +17,7 @@ from trading_bot.data.binance_vision import BinanceVisionError, BinanceVisionHis
 from trading_bot.data.csv_store import (
     CsvDataError,
     contains_non_tradable_intervals,
+    metadata_path,
     read_candles,
     verified_missing_open_times,
     verify_metadata_checksum,
@@ -196,21 +197,26 @@ def _download(args: argparse.Namespace, settings: BotSettings) -> None:
             download_vision_historical_csv(client, args.start, end, args.output, args.overwrite)
         )
         payload = summary_json(summary)
+        if not verify_metadata_checksum(args.output):
+            raise DataCoverageError("Vision publisher did not create verified metadata")
+        try:
+            metadata = json.loads(metadata_path(args.output).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DataCoverageError("could not read verified Vision metadata") from exc
         payload["vision_audit"] = {
-            "archive_candle_count": len(client.parsed),
-            "exact_archive_timestamp_candle_count": sum(
-                item.quality.value == "exact" for item in client.parsed
-            ),
-            "accepted_archive_anomaly_count": sum(
-                item.quality.value != "exact" for item in client.parsed
-            ),
-            "rest_suffix_candle_count": client.rest_suffix_candle_count,
-            "maximum_timestamp_deviation_us": max(
-                (item.early_close_deviation_us for item in client.parsed), default=0
-            ),
-            "missing_candle_count": 0,
-            "duplicate_candle_count": 0,
-            "conflicting_candle_count": 0,
+            key: metadata[key]
+            for key in (
+                "archive_candle_count",
+                "exact_archive_timestamp_candle_count",
+                "accepted_archive_anomaly_count",
+                "market_interruption_event_count",
+                "market_interruption_candle_count",
+                "missing_candle_count",
+                "contains_non_tradable_intervals",
+                "rest_suffix_candle_count",
+                "duplicate_candle_count",
+                "conflicting_candle_count",
+            )
         }
     else:
         summary = asyncio.run(
