@@ -6,6 +6,7 @@ import json
 import math
 import re
 import sys
+from dataclasses import asdict
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -138,6 +139,8 @@ def _is_sensitive_setting_name(key: str) -> bool:
 
 
 def _json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
     if isinstance(value, float) and not math.isfinite(value):
         return "Infinity" if value > 0 else "-Infinity"
     if isinstance(value, dict):
@@ -291,6 +294,9 @@ def _build_dataset(args: argparse.Namespace) -> None:
                 "segment_count": summary.segment_count,
                 "candidate_counts": summary.candidate_counts,
                 "development_label_counts": summary.label_counts,
+                "development_trainable": summary.trainable_splits,
+                "candidate_policy": _json_safe(asdict(summary.candidate_policy)),
+                "label_policy": _json_safe(asdict(summary.label_policy)),
                 "excluded_row_counts": summary.exclusion_counts,
                 "output_file_sha256": summary.output_checksums,
             },

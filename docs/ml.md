@@ -7,13 +7,22 @@ The builder accepts only a verified BTC/USDT 1h Vision generation: CSV, metadata
 report checksums and generation identity must validate before anything is published. Rows are
 created only for deterministic long candidates, never for every candle.
 
+The candidate policy is an immutable, versioned baseline embedded in the builder: BTC/USDT 1h,
+EMA 20/50/200, volume window 20 with multiplier 1.2, ATR 14, and the versioned
+`EmaVolumeAtrStrategy` entry rule. It is included with the label policy, feature schema, split,
+segmentation, and holdout policy versions in the content-derived generation ID and manifest. The
+builder does not read `.env` candidate settings.
+
 The immutable half-open ranges are train `[2022-01-01, 2025-01-01)`, validation `[2025-01-01,
 2026-01-01)`, test `[2026-01-01, 2026-05-01)`, and final holdout from `2026-05-01` to the source
 end. Indicators warm up independently for each split and continuous tradable segment. There is no
 random split, shuffle, interpolation, or history across a verified interruption.
 
 Development labels use next-open entry with modeled entry/exit slippage and fees, a 2x causal ATR
-stop, a 4x ATR profit barrier, and a 48-candle maximum hold. Stop wins an ambiguous OHLC touch.
+stop, a 4x ATR profit barrier, and a 48-candle maximum hold. An opening gap is resolved at the
+known open (stop first, then capped-at-target profit); otherwise stop wins an ambiguous OHLC touch
+inside a candle. Label availability is the open for gap outcomes and candle close for intrabar
+outcomes.
 Timeouts are reported but excluded from binary rows. The final holdout is sealed: it contains only
 candidate features and audit timestamps, never targets, outcomes, label-end times, or returns.
 

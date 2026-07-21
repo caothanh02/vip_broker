@@ -34,10 +34,14 @@ from trading_bot.data.csv_store import (
 from trading_bot.data.validation import validate_candles
 from trading_bot.domain.models import Candle
 from trading_bot.features.pipeline import FEATURE_COLUMNS, FEATURE_SCHEMA_VERSION, build_features
-from trading_bot.settings import BotSettings
 from trading_bot.strategy.ema_volume_atr import long_entry_candidate_mask
 
 HOUR: Final = timedelta(hours=1)
+DATASET_SCHEMA_VERSION: Final = "2.0.0"
+CANDIDATE_POLICY_VERSION: Final = "1.0.0"
+LABEL_POLICY_VERSION: Final = "1.0.0"
+SEGMENTATION_POLICY_VERSION: Final = "1.0.0"
+HOLDOUT_POLICY_VERSION: Final = "1.0.0"
 SPLITS: Final = {
     "train": (datetime(2022, 1, 1, tzinfo=UTC), datetime(2025, 1, 1, tzinfo=UTC)),
     "validation": (datetime(2025, 1, 1, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC)),
@@ -74,6 +78,27 @@ class LabelPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidatePolicy:
+    """Immutable baseline entry policy; environment files cannot alter it."""
+
+    symbol: str = "BTC/USDT"
+    timeframe: str = "1h"
+    ema_fast: int = 20
+    ema_slow: int = 50
+    ema_trend: int = 200
+    volume_window: int = 20
+    volume_multiplier: float = 1.2
+    atr_window: int = 14
+    strategy_name: str = "EmaVolumeAtrStrategy"
+    strategy_version: str = "1.0.0"
+    entry_rule_version: str = CANDIDATE_POLICY_VERSION
+
+
+DEFAULT_CANDIDATE_POLICY: Final = CandidatePolicy()
+DEFAULT_LABEL_POLICY: Final = LabelPolicy()
+
+
+@dataclass(frozen=True, slots=True)
 class DatasetBuildSummary:
     generation_id: str
     source_generation_id: str
@@ -83,6 +108,9 @@ class DatasetBuildSummary:
     label_counts: dict[str, dict[str, int]]
     exclusion_counts: dict[str, int]
     output_checksums: dict[str, str]
+    trainable_splits: dict[str, bool]
+    candidate_policy: CandidatePolicy
+    label_policy: LabelPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +126,37 @@ def _iso(value: datetime) -> str:
 
 def _file_sha256(path: Path) -> str:
     return csv_sha256(path)
+
+
+def _generation_id(
+    source_checksums: dict[str, str],
+    source_generation_id: str,
+    splits: dict[str, tuple[datetime, datetime]],
+    candidate_policy: CandidatePolicy,
+    label_policy: LabelPolicy,
+) -> str:
+    identity = hashlib.sha256(
+        json.dumps(
+            {
+                "source": source_checksums,
+                "source_generation_id": source_generation_id,
+                "features": FEATURE_COLUMNS,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
+                "dataset_schema_version": DATASET_SCHEMA_VERSION,
+                "candidate_policy": asdict(candidate_policy),
+                "label_policy": asdict(label_policy),
+                "candidate_policy_version": CANDIDATE_POLICY_VERSION,
+                "label_policy_version": LABEL_POLICY_VERSION,
+                "segmentation_policy_version": SEGMENTATION_POLICY_VERSION,
+                "holdout_policy_version": HOLDOUT_POLICY_VERSION,
+                "splits": {name: (_iso(start), _iso(end)) for name, (start, end) in splits.items()},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+    ).hexdigest()
+    return identity[:32]
 
 
 def _code_commit() -> str | None:
@@ -116,10 +175,21 @@ def _code_commit() -> str | None:
     return value if len(value) == 40 else None
 
 
-def _read_verified_source(input_path: Path) -> tuple[list[Candle], dict[str, Any], set[datetime]]:
+def _verified_report_path(input_path: Path, metadata: dict[str, Any]) -> Path:
+    name = metadata.get("anomaly_report")
+    if not isinstance(name, str) or Path(name).name != name:
+        raise DatasetBuildError("verified anomaly report reference is invalid")
+    report_path = input_path.parent / name
+    if not report_path.exists():
+        raise DatasetBuildError("verified anomaly report is missing")
+    return report_path
+
+
+def _read_verified_source(
+    input_path: Path,
+) -> tuple[list[Candle], dict[str, Any], set[datetime], Path]:
     sidecar = metadata_path(input_path)
-    report_path = input_path.with_name(f"{input_path.stem}.anomalies.json")
-    if not input_path.exists() or not sidecar.exists() or not report_path.exists():
+    if not input_path.exists() or not sidecar.exists():
         raise DatasetBuildError("verified CSV, metadata, and anomaly report are all required")
     try:
         verified = verify_metadata_checksum(input_path)
@@ -128,6 +198,7 @@ def _read_verified_source(input_path: Path) -> tuple[list[Candle], dict[str, Any
         raise DatasetBuildError("source verification failed") from exc
     if not verified or not isinstance(metadata_raw, dict):
         raise DatasetBuildError("source metadata verification failed")
+    report_path = _verified_report_path(input_path, metadata_raw)
     if metadata_raw.get("internal_symbol") != "BTC/USDT" or metadata_raw.get("timeframe") != "1h":
         raise DatasetBuildError("source must be BTC/USDT 1h")
     allowed_missing = verified_missing_open_times(input_path)
@@ -138,11 +209,10 @@ def _read_verified_source(input_path: Path) -> tuple[list[Candle], dict[str, Any
         raise DatasetBuildError("source candles are not valid closed UTC candles") from exc
     if any(candle.symbol != "BTC/USDT" or candle.timeframe != "1h" for candle in candles):
         raise DatasetBuildError("source contains an unsupported market")
-    return candles, metadata_raw, allowed_missing
+    return candles, metadata_raw, allowed_missing, report_path
 
 
-def _non_tradable_open_times(input_path: Path) -> set[datetime]:
-    report_path = input_path.with_name(f"{input_path.stem}.anomalies.json")
+def _non_tradable_open_times(report_path: Path) -> set[datetime]:
     try:
         report = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -166,18 +236,53 @@ def _non_tradable_open_times(input_path: Path) -> set[datetime]:
 
 
 def _effective_splits(metadata: dict[str, Any]) -> dict[str, tuple[datetime, datetime]]:
-    try:
-        effective_end = datetime.fromisoformat(
-            str(metadata["effective_end"]).replace("Z", "+00:00")
-        )
-    except (KeyError, ValueError) as exc:
-        raise DatasetBuildError("metadata effective_end is invalid") from exc
-    if effective_end.tzinfo is None or effective_end.utcoffset() != timedelta(0):
-        raise DatasetBuildError("metadata effective_end must be UTC")
-    effective_end = effective_end.astimezone(UTC)
+    requested_start = _metadata_hour(metadata, "requested_start")
+    if requested_start > SPLITS["train"][0]:
+        raise DatasetBuildError("verified source starts after the fixed train range")
+    effective_end = _metadata_hour(metadata, "effective_end")
     if effective_end <= SPLITS["test"][1]:
         raise DatasetBuildError("verified source does not cover the fixed test range")
     return {**SPLITS, FINAL_HOLDOUT: (SPLITS["test"][1], effective_end)}
+
+
+def _metadata_hour(metadata: dict[str, Any], key: str) -> datetime:
+    try:
+        value = metadata[key]
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (KeyError, ValueError) as exc:
+        raise DatasetBuildError(f"metadata {key} is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise DatasetBuildError(f"metadata {key} must be UTC")
+    parsed = parsed.astimezone(UTC)
+    if parsed.minute or parsed.second or parsed.microsecond:
+        raise DatasetBuildError(f"metadata {key} must be UTC hour-aligned")
+    return parsed
+
+
+def _validate_fixed_coverage(
+    candles: list[Candle],
+    splits: dict[str, tuple[datetime, datetime]],
+    missing: set[datetime],
+    non_tradable: set[datetime],
+) -> None:
+    actual = {candle.open_time for candle in candles}
+    if len(actual) != len(candles):
+        raise DatasetBuildError("source contains duplicate candles")
+    if not non_tradable <= actual:
+        raise DatasetBuildError("verified non-tradable candle is absent from the source")
+    for name, (start, end) in splits.items():
+        expected: set[datetime] = set()
+        cursor = start
+        while cursor < end:
+            expected.add(cursor)
+            cursor += HOUR
+        observed = actual & expected
+        absent = expected - observed
+        audited_absent = missing & expected
+        if absent != audited_absent:
+            raise DatasetBuildError(f"fixed split coverage is incomplete: {name}")
+        if not observed:
+            raise DatasetBuildError(f"fixed split is empty: {name}")
 
 
 def _segments(
@@ -222,8 +327,8 @@ def _segment_frame(segment: _Segment) -> pd.DataFrame:
     return frame
 
 
-def _candidate_indices(frame: pd.DataFrame, settings: BotSettings) -> list[int]:
-    mask = long_entry_candidate_mask(frame, settings)
+def _candidate_indices(frame: pd.DataFrame, policy: CandidatePolicy) -> list[int]:
+    mask = long_entry_candidate_mask(frame, policy)
     # `shift(1)` is evaluated only in this split/segment frame, so no
     # crossover comparison can bridge either boundary.
     return [int(position) for position in np.flatnonzero(mask.to_numpy()) if position > 0]
@@ -249,19 +354,41 @@ def _label(
     stop = entry_reference - policy.stop_atr_multiple * atr
     target = entry_reference + policy.profit_atr_multiple * atr
     for candle in candles[entry_index : final_index + 1]:
-        # Gap through stop cannot obtain the better barrier fill.  A target is
-        # deliberately capped at its barrier, avoiding an optimistic gap price.
+        # The opening price is known before any later OHLC movement. Both gap
+        # outcomes are therefore decided before conservative intrabar ordering.
         if candle.open <= stop:
-            exit_reference, outcome, target_value = candle.open, "stop", 0
+            exit_reference, outcome, target_value, available_at = (
+                candle.open,
+                "stop",
+                0,
+                candle.open_time,
+            )
+        elif candle.open >= target:
+            exit_reference, outcome, target_value, available_at = (
+                target,
+                "profit",
+                1,
+                candle.open_time,
+            )
         elif candle.low <= stop:
-            exit_reference, outcome, target_value = stop, "stop", 0
-        elif candle.open >= target or candle.high >= target:
-            exit_reference, outcome, target_value = target, "profit", 1
+            exit_reference, outcome, target_value, available_at = (
+                stop,
+                "stop",
+                0,
+                candle.close_time,
+            )
+        elif candle.high >= target:
+            exit_reference, outcome, target_value, available_at = (
+                target,
+                "profit",
+                1,
+                candle.close_time,
+            )
         else:
             continue
         exit_fill = _exit_fill(exit_reference, policy)
         proceeds = exit_fill * (Decimal("1") - policy.exit_fee_rate)
-        return outcome, target_value, candle.open_time, proceeds / entry_cost - Decimal("1")
+        return outcome, target_value, available_at, proceeds / entry_cost - Decimal("1")
     return "timeout", None, candles[final_index].close_time, None
 
 
@@ -276,7 +403,7 @@ def _as_feature_values(row: pd.Series) -> dict[str, float]:
 
 
 def _build_rows(
-    segments: list[_Segment], settings: BotSettings, policy: LabelPolicy
+    segments: list[_Segment], candidate_policy: CandidatePolicy, policy: LabelPolicy
 ) -> tuple[
     dict[str, list[dict[str, Any]]], dict[str, int], dict[str, dict[str, int]], dict[str, int]
 ]:
@@ -286,7 +413,7 @@ def _build_rows(
     exclusions: dict[str, int] = {}
     for segment in segments:
         frame = _segment_frame(segment)
-        for index in _candidate_indices(frame, settings):
+        for index in _candidate_indices(frame, candidate_policy):
             candidates[segment.split] += 1
             candle = segment.candles[index]
             entry_index = index + 1
@@ -348,16 +475,46 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], split: str) -> None:
         os.fsync(handle.fileno())
 
 
-def _verify_staged_csv(path: Path, split: str) -> None:
+def _parse_output_time(value: str, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise DatasetBuildError(f"invalid staged {field}") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise DatasetBuildError(f"staged {field} must be UTC")
+    return parsed.astimezone(UTC)
+
+
+def _verify_staged_csv(
+    path: Path,
+    split: str,
+    split_bounds: tuple[datetime, datetime],
+    segment_bounds: dict[str, tuple[str, datetime, datetime]],
+) -> int:
     """Validate the generated schema and ensure no future label leaks to holdout."""
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             if reader.fieldnames != _output_columns(split):
                 raise DatasetBuildError("staged dataset schema mismatch")
+            previous_signal: datetime | None = None
+            count = 0
             for row in reader:
                 if set(row) != set(_output_columns(split)):
                     raise DatasetBuildError("staged dataset row schema mismatch")
+                if row["split"] != split or row["feature_schema_version"] != FEATURE_SCHEMA_VERSION:
+                    raise DatasetBuildError("staged dataset row policy mismatch")
+                signal = _parse_output_time(row["signal_time"], "signal_time")
+                entry = _parse_output_time(row["entry_time"], "entry_time")
+                start, end = split_bounds
+                if not (start <= signal <= entry < end):
+                    raise DatasetBuildError("staged signal/entry leaves its split")
+                if previous_signal is not None and signal <= previous_signal:
+                    raise DatasetBuildError("staged signal rows are not strictly ordered")
+                previous_signal = signal
+                segment = segment_bounds.get(row["segment_id"])
+                if segment is None or segment[0] != split or not (segment[1] <= entry < segment[2]):
+                    raise DatasetBuildError("staged row has an invalid segment")
                 for column in FEATURE_COLUMNS:
                     value = float(row[column])
                     if not np.isfinite(value):
@@ -365,8 +522,15 @@ def _verify_staged_csv(path: Path, split: str) -> None:
                 if split != FINAL_HOLDOUT:
                     if row["target"] not in {"0", "1"} or row["outcome"] not in {"stop", "profit"}:
                         raise DatasetBuildError("staged development label is invalid")
+                    if (row["target"] == "1") != (row["outcome"] == "profit"):
+                        raise DatasetBuildError("staged target and outcome disagree")
+                    label_end = _parse_output_time(row["label_end_time"], "label_end_time")
+                    if not (entry <= label_end < end and label_end <= segment[2]):
+                        raise DatasetBuildError("staged label leaves its split or segment")
                     if not Decimal(row["net_return_after_costs"]).is_finite():
                         raise DatasetBuildError("staged net return is non-finite")
+                count += 1
+            return count
     except (OSError, ValueError, KeyError, InvalidOperation) as exc:
         raise DatasetBuildError("could not validate staged dataset output") from exc
 
@@ -379,39 +543,226 @@ def _output_times(rows: list[dict[str, Any]]) -> dict[str, str | None]:
     }
 
 
-def _atomic_publish(staged: Path, destination: Path) -> None:
+def _manifest_segment_bounds(payload: dict[str, Any]) -> dict[str, tuple[str, datetime, datetime]]:
+    records = payload.get("segments")
+    if not isinstance(records, dict):
+        raise DatasetBuildError("dataset manifest segments are invalid")
+    result: dict[str, tuple[str, datetime, datetime]] = {}
+    for segment_id, record in records.items():
+        if not isinstance(segment_id, str) or not isinstance(record, dict):
+            raise DatasetBuildError("dataset manifest segment is invalid")
+        split = record.get("split")
+        if not isinstance(split, str):
+            raise DatasetBuildError("dataset manifest segment split is invalid")
+        start = _parse_output_time(str(record.get("start")), "segment start")
+        end = _parse_output_time(str(record.get("end")), "segment end")
+        if end <= start:
+            raise DatasetBuildError("dataset manifest segment duration is invalid")
+        result[segment_id] = (split, start, end)
+    return result
+
+
+def _manifest_splits(payload: dict[str, Any]) -> dict[str, tuple[datetime, datetime]]:
+    raw = payload.get("splits")
+    if not isinstance(raw, dict):
+        raise DatasetBuildError("dataset manifest splits are invalid")
+    result: dict[str, tuple[datetime, datetime]] = {}
+    for split in [*SPLITS, FINAL_HOLDOUT]:
+        record = raw.get(split)
+        if not isinstance(record, dict):
+            raise DatasetBuildError("dataset manifest split is invalid")
+        start = _parse_output_time(str(record.get("start")), "split start")
+        end = _parse_output_time(str(record.get("end")), "split end")
+        if end <= start:
+            raise DatasetBuildError("dataset manifest split duration is invalid")
+        result[split] = (start, end)
+    return result
+
+
+def _validate_generation(directory: Path) -> None:
+    manifest_path = directory / "dataset.manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DatasetBuildError("dataset generation manifest is invalid") from exc
+    if not isinstance(manifest, dict):
+        raise DatasetBuildError("dataset generation manifest is invalid")
+    required_versions = {
+        "dataset_schema_version": DATASET_SCHEMA_VERSION,
+        "candidate_policy_version": CANDIDATE_POLICY_VERSION,
+        "label_policy_version": LABEL_POLICY_VERSION,
+        "segmentation_policy_version": SEGMENTATION_POLICY_VERSION,
+        "holdout_policy_version": HOLDOUT_POLICY_VERSION,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+    }
+    if any(manifest.get(key) != value for key, value in required_versions.items()):
+        raise DatasetBuildError("dataset generation schema policy mismatch")
+    if (
+        not isinstance(manifest.get("dataset_generation_id"), str)
+        or not isinstance(manifest.get("candidate_policy"), dict)
+        or not isinstance(manifest.get("label_policy"), dict)
+        or manifest.get("feature_columns") != FEATURE_COLUMNS
+        or any(
+            not isinstance(manifest.get(key), str)
+            for key in (
+                "source_csv_sha256",
+                "source_metadata_sha256",
+                "anomaly_report_sha256",
+                "source_generation_id",
+            )
+        )
+    ):
+        raise DatasetBuildError("dataset generation identity metadata is invalid")
+    checksums = manifest.get("output_file_sha256")
+    row_counts = manifest.get("row_counts")
+    if not isinstance(checksums, dict) or not isinstance(row_counts, dict):
+        raise DatasetBuildError("dataset generation checksum or count metadata is invalid")
+    splits = _manifest_splits(manifest)
+    segments = _manifest_segment_bounds(manifest)
+    try:
+        candidate_policy = CandidatePolicy(**manifest["candidate_policy"])
+        label_values = dict(manifest["label_policy"])
+        for key in (
+            "stop_atr_multiple",
+            "profit_atr_multiple",
+            "entry_fee_rate",
+            "exit_fee_rate",
+            "entry_slippage_rate",
+            "exit_slippage_rate",
+        ):
+            label_values[key] = Decimal(str(label_values[key]))
+        label_policy = LabelPolicy(**label_values)
+        source_checksums = {
+            key: manifest[key]
+            for key in ("source_csv_sha256", "source_metadata_sha256", "anomaly_report_sha256")
+        }
+    except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
+        raise DatasetBuildError("dataset generation policy metadata is invalid") from exc
+    if manifest["dataset_generation_id"] != _generation_id(
+        source_checksums,
+        manifest["source_generation_id"],
+        splits,
+        candidate_policy,
+        label_policy,
+    ):
+        raise DatasetBuildError("dataset generation identity does not match its policy")
+    for split in [*SPLITS, FINAL_HOLDOUT]:
+        filename = f"{split}.csv"
+        checksum = checksums.get(filename)
+        if not isinstance(checksum, str) or checksum != _file_sha256(directory / filename):
+            raise DatasetBuildError("dataset generation output checksum mismatch")
+        count = _verify_staged_csv(directory / filename, split, splits[split], segments)
+        if row_counts.get(split) != count:
+            raise DatasetBuildError("dataset generation output row count mismatch")
+    label_counts = manifest.get("development_label_counts")
+    trainable = manifest.get("development_trainable")
+    if not isinstance(label_counts, dict) or not isinstance(trainable, dict):
+        raise DatasetBuildError("dataset generation development metadata is invalid")
+    for split in SPLITS:
+        counts = label_counts.get(split)
+        if not isinstance(counts, dict):
+            raise DatasetBuildError("dataset generation label counts are invalid")
+        positive, negative = counts.get("positive"), counts.get("negative")
+        timeout = counts.get("timeout")
+        if (
+            not isinstance(positive, int)
+            or not isinstance(negative, int)
+            or not isinstance(timeout, int)
+            or positive < 0
+            or negative < 0
+            or timeout < 0
+            or row_counts.get(split) != positive + negative
+        ):
+            raise DatasetBuildError("dataset generation label counts are invalid")
+        if trainable.get(split) is not (positive > 0 and negative > 0):
+            raise DatasetBuildError("dataset generation trainable status is invalid")
+
+
+def _generation_is_valid(directory: Path) -> bool:
+    try:
+        _validate_generation(directory)
+    except DatasetBuildError:
+        return False
+    return True
+
+
+def _recover_generation(destination: Path) -> None:
+    """Recover a complete previous directory after an interrupted Windows rename."""
     backup = destination.with_name(f".{destination.name}.previous")
-    if backup.exists():
-        shutil.rmtree(backup)
-    replaced = False
+    destination_exists, backup_exists = destination.exists(), backup.exists()
+    destination_valid = destination_exists and _generation_is_valid(destination)
+    backup_valid = backup_exists and _generation_is_valid(backup)
+    if destination_valid:
+        # Destination is authoritative. A stale/corrupt backup must never
+        # replace it, and can be removed only after that validation succeeds.
+        if backup_exists:
+            shutil.rmtree(backup)
+        return
+    if backup_valid:
+        if destination_exists:
+            shutil.rmtree(destination)
+        os.replace(backup, destination)
+        _validate_generation(destination)
+        return
+    if destination_exists or backup_exists:
+        raise DatasetBuildError("no valid dataset generation is available for recovery")
+
+
+def _atomic_publish(staged: Path, destination: Path) -> None:
+    """Promote a verified directory and retain/recover the previous generation."""
+    _recover_generation(destination)
+    _validate_generation(staged)
+    backup = destination.with_name(f".{destination.name}.previous")
+    moved_previous = False
     try:
         if destination.exists():
             os.replace(destination, backup)
-            replaced = True
+            moved_previous = True
         os.replace(staged, destination)
     except Exception:
-        if replaced and backup.exists() and not destination.exists():
+        if moved_previous and backup.exists() and not destination.exists():
             os.replace(backup, destination)
         raise
-    else:
-        if backup.exists():
-            shutil.rmtree(backup)
+    try:
+        _validate_generation(destination)
+    except Exception:
+        if moved_previous and backup.exists():
+            if destination.exists():
+                shutil.rmtree(destination)
+            os.replace(backup, destination)
+        raise
+    if backup.exists():
+        shutil.rmtree(backup)
 
 
-def build_ml_dataset(input_path: Path, output_dir: Path) -> DatasetBuildSummary:
+def build_ml_dataset(
+    input_path: Path,
+    output_dir: Path,
+    *,
+    candidate_policy: CandidatePolicy = DEFAULT_CANDIDATE_POLICY,
+    label_policy: LabelPolicy = DEFAULT_LABEL_POLICY,
+) -> DatasetBuildSummary:
     """Verify a Vision generation and publish a deterministic ML dataset generation."""
-    candles, metadata, missing = _read_verified_source(input_path)
-    non_tradable = _non_tradable_open_times(input_path)
+    candles, metadata, missing, report_path = _read_verified_source(input_path)
+    non_tradable = _non_tradable_open_times(report_path)
     splits = _effective_splits(metadata)
+    _validate_fixed_coverage(candles, splits, missing, non_tradable)
     segments = _segments(candles, splits, missing, non_tradable)
-    settings = BotSettings()
-    policy = LabelPolicy(
-        entry_fee_rate=settings.entry_fee_rate,
-        exit_fee_rate=settings.exit_fee_rate,
-        entry_slippage_rate=settings.entry_slippage_rate,
-        exit_slippage_rate=settings.exit_slippage_rate,
+    rows, candidate_counts, label_counts, exclusions = _build_rows(
+        segments, candidate_policy, label_policy
     )
-    rows, candidate_counts, label_counts, exclusions = _build_rows(segments, settings, policy)
+    trainable_splits = {
+        name: counts["positive"] > 0 and counts["negative"] > 0
+        for name, counts in label_counts.items()
+    }
+    segment_bounds = {
+        segment.segment_id: (
+            segment.split,
+            segment.candles[0].open_time,
+            segment.candles[-1].close_time,
+        )
+        for segment in segments
+    }
     parent = output_dir.parent
     parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.staging-", dir=parent))
@@ -425,30 +776,19 @@ def build_ml_dataset(input_path: Path, output_dir: Path) -> DatasetBuildSummary:
         source_checksums = {
             "source_csv_sha256": _file_sha256(input_path),
             "source_metadata_sha256": _file_sha256(metadata_path(input_path)),
-            "anomaly_report_sha256": _file_sha256(
-                input_path.with_name(f"{input_path.stem}.anomalies.json")
-            ),
+            "anomaly_report_sha256": _file_sha256(report_path),
         }
-        identity = hashlib.sha256(
-            json.dumps(
-                {
-                    "source": source_checksums,
-                    "features": FEATURE_COLUMNS,
-                    "feature_schema_version": FEATURE_SCHEMA_VERSION,
-                    "policy": asdict(policy),
-                    "splits": {
-                        name: (_iso(start), _iso(end)) for name, (start, end) in splits.items()
-                    },
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            ).encode()
-        ).hexdigest()
-        generation_id = identity[:32]
+        generation_id = _generation_id(
+            source_checksums,
+            str(metadata["generation_id"]),
+            splits,
+            candidate_policy,
+            label_policy,
+        )
         manifest = {
             "dataset_generation_id": generation_id,
             **source_checksums,
+            "anomaly_report": report_path.name,
             "source_generation_id": metadata["generation_id"],
             "symbol": "BTC/USDT",
             "timeframe": "1h",
@@ -456,9 +796,15 @@ def build_ml_dataset(input_path: Path, output_dir: Path) -> DatasetBuildSummary:
                 name: {"start": _iso(start), "end": _iso(end)}
                 for name, (start, end) in splits.items()
             },
+            "dataset_schema_version": DATASET_SCHEMA_VERSION,
+            "candidate_policy_version": CANDIDATE_POLICY_VERSION,
+            "label_policy_version": LABEL_POLICY_VERSION,
+            "segmentation_policy_version": SEGMENTATION_POLICY_VERSION,
+            "holdout_policy_version": HOLDOUT_POLICY_VERSION,
+            "candidate_policy": asdict(candidate_policy),
             "label_policy": {
                 key: str(value) if isinstance(value, Decimal) else value
-                for key, value in asdict(policy).items()
+                for key, value in asdict(label_policy).items()
             },
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "feature_columns": FEATURE_COLUMNS,
@@ -466,13 +812,23 @@ def build_ml_dataset(input_path: Path, output_dir: Path) -> DatasetBuildSummary:
             "row_counts": {name: len(value) for name, value in rows.items()},
             "candidate_counts": candidate_counts,
             "development_label_counts": label_counts,
+            "development_trainable": trainable_splits,
             "excluded_row_counts": exclusions,
             "split_signal_coverage": {name: _output_times(value) for name, value in rows.items()},
             "output_file_sha256": checksums,
             "interruption_summary": {
+                "policy_version": SEGMENTATION_POLICY_VERSION,
                 "verified_missing_open_times": [_iso(value) for value in sorted(missing)],
                 "non_tradable_open_times": [_iso(value) for value in sorted(non_tradable)],
                 "segment_count": len(segments),
+            },
+            "segments": {
+                segment_id: {
+                    "split": split,
+                    "start": _iso(start),
+                    "end": _iso(end),
+                }
+                for segment_id, (split, start, end) in segment_bounds.items()
             },
         }
         manifest_path = staging / "dataset.manifest.json"
@@ -484,7 +840,11 @@ def build_ml_dataset(input_path: Path, output_dir: Path) -> DatasetBuildSummary:
         # Read the staged artefacts back before publishing.  The manifest is
         # written last and acts as the generation commit marker.
         for split in rows:
-            _verify_staged_csv(staging / f"{split}.csv", split)
+            verified_count = _verify_staged_csv(
+                staging / f"{split}.csv", split, splits[split], segment_bounds
+            )
+            if verified_count != len(rows[split]):
+                raise DatasetBuildError("staged output row count mismatch")
             if _file_sha256(staging / f"{split}.csv") != checksums[f"{split}.csv"]:
                 raise DatasetBuildError("staged output checksum mismatch")
         _atomic_publish(staging, output_dir)
@@ -501,4 +861,7 @@ def build_ml_dataset(input_path: Path, output_dir: Path) -> DatasetBuildSummary:
         label_counts,
         exclusions,
         checksums,
+        trainable_splits,
+        candidate_policy,
+        label_policy,
     )

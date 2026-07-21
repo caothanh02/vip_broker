@@ -11,15 +11,24 @@ from trading_bot.data.csv_store import write_candles_atomic
 from trading_bot.domain.models import Candle
 from trading_bot.ml.dataset import (
     FINAL_HOLDOUT,
+    CandidatePolicy,
     DatasetBuildError,
     LabelPolicy,
     _atomic_publish,
+    _effective_splits,
+    _generation_id,
     _label,
     _output_columns,
+    _recover_generation,
     _Segment,
     _segment_frame,
     _segments,
+    _validate_fixed_coverage,
     build_ml_dataset,
+)
+from trading_bot.strategy.ema_volume_atr import (
+    is_long_entry_candidate,
+    long_entry_candidate_mask,
 )
 
 BASE = datetime(2022, 1, 1, tzinfo=UTC)
@@ -107,7 +116,7 @@ def test_label_uses_next_open_atr_barriers_and_costs() -> None:
         True,
     )
     outcome, target, end, net = _label(data, 0, Decimal("2"), LabelPolicy())
-    assert outcome == "profit" and target == 1 and end == data[2].open_time
+    assert outcome == "profit" and target == 1 and end == data[2].close_time
     expected_entry = Decimal("110") * Decimal("1.0005") * Decimal("1.001")
     expected_exit = Decimal("118") * Decimal("0.9995") * Decimal("0.999")
     assert net == expected_exit / expected_entry - 1
@@ -150,6 +159,63 @@ def test_same_candle_barrier_tie_is_stop_first_and_gap_stop_uses_open() -> None:
     assert net == expected_exit / expected_entry - 1
 
 
+def test_label_availability_orders_open_gaps_before_intrabar_barriers() -> None:
+    data = label_candles()
+    gap_stop = data[2]
+    data[2] = Candle(
+        gap_stop.open_time,
+        gap_stop.close_time,
+        gap_stop.symbol,
+        gap_stop.timeframe,
+        Decimal("90"),
+        Decimal("101"),
+        Decimal("89"),
+        Decimal("100"),
+        gap_stop.volume,
+        True,
+    )
+    outcome, target, end, _ = _label(data, 0, Decimal("2"), LabelPolicy())
+    assert (outcome, target, end) == ("stop", 0, data[2].open_time)
+
+    target_gap = data[2]
+    data[2] = Candle(
+        target_gap.open_time,
+        target_gap.close_time,
+        target_gap.symbol,
+        target_gap.timeframe,
+        Decimal("109"),
+        Decimal("110"),
+        Decimal("90"),
+        Decimal("100"),
+        target_gap.volume,
+        True,
+    )
+    outcome, target, end, net = _label(data, 0, Decimal("2"), LabelPolicy())
+    assert (outcome, target, end) == ("profit", 1, data[2].open_time)
+    expected_entry = Decimal("100") * Decimal("1.0005") * Decimal("1.001")
+    expected_target_exit = Decimal("108") * Decimal("0.9995") * Decimal("0.999")
+    assert net == expected_target_exit / expected_entry - 1
+
+
+def test_intrabar_label_availability_is_candle_close() -> None:
+    data = label_candles()
+    touched = data[2]
+    data[2] = Candle(
+        touched.open_time,
+        touched.close_time,
+        touched.symbol,
+        touched.timeframe,
+        Decimal("100"),
+        Decimal("109"),
+        Decimal("99"),
+        Decimal("108"),
+        touched.volume,
+        True,
+    )
+    outcome, target, end, _ = _label(data, 0, Decimal("2"), LabelPolicy())
+    assert (outcome, target, end) == ("profit", 1, data[2].close_time)
+
+
 def test_timeout_and_incomplete_horizon_are_excluded_from_labels() -> None:
     outcome, target, _, net = _label(label_candles(), 0, Decimal("2"), LabelPolicy())
     assert outcome == "timeout" and target is None and net is None
@@ -183,6 +249,103 @@ def test_tampered_metadata_is_rejected_before_output_publication(tmp_path: Path)
     assert not destination.exists()
 
 
+def test_fixed_range_metadata_and_actual_coverage_fail_closed() -> None:
+    with pytest.raises(DatasetBuildError, match="starts after"):
+        _effective_splits(
+            {
+                "requested_start": "2024-01-01T00:00:00Z",
+                "effective_end": "2026-05-02T00:00:00Z",
+            }
+        )
+    with pytest.raises(DatasetBuildError, match="hour-aligned"):
+        _effective_splits(
+            {
+                "requested_start": "2022-01-01T00:00:00Z",
+                "effective_end": "2026-05-02T00:30:00Z",
+            }
+        )
+    with pytest.raises(DatasetBuildError, match="must be UTC"):
+        _effective_splits(
+            {
+                "requested_start": "2022-01-01T00:00:00+07:00",
+                "effective_end": "2026-05-02T00:00:00Z",
+            }
+        )
+    splits = {"train": (BASE, BASE + timedelta(hours=3))}
+    with pytest.raises(DatasetBuildError, match="incomplete"):
+        _validate_fixed_coverage([candle(0), candle(2)], splits, set(), set())
+    _validate_fixed_coverage([candle(0), candle(2)], splits, {BASE + timedelta(hours=1)}, set())
+
+
+def test_public_builder_rejects_verified_but_partial_fixed_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "btc.csv"
+    source.write_text("source", encoding="utf-8")
+    report = source.with_name("btc.anomalies.json")
+    report.write_text("report", encoding="utf-8")
+    metadata = {
+        "generation_id": "verified-source",
+        "requested_start": "2022-01-01T00:00:00Z",
+        "effective_end": "2026-05-02T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        "trading_bot.ml.dataset._read_verified_source",
+        lambda _: ([candle(index) for index in range(240)], metadata, set(), report),
+    )
+    monkeypatch.setattr("trading_bot.ml.dataset._non_tradable_open_times", lambda _: set())
+    with pytest.raises(DatasetBuildError, match="fixed split coverage is incomplete"):
+        build_ml_dataset(source, tmp_path / "output")
+
+
+def test_candidate_policy_is_reproducible_and_matches_execution_predicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = CandidatePolicy()
+    frame = pd.DataFrame(
+        [
+            {
+                "is_closed": True,
+                "ema20": 1.0,
+                "ema50": 1.0,
+                "ema200": 0.5,
+                "close": 1.0,
+                "volume": 10.0,
+                "volume_sma20": 5.0,
+                "atr14": 1.0,
+            },
+            {
+                "is_closed": True,
+                "ema20": 2.0,
+                "ema50": 1.0,
+                "ema200": 0.5,
+                "close": 1.0,
+                "volume": 10.0,
+                "volume_sma20": 5.0,
+                "atr14": 1.0,
+            },
+        ]
+    )
+    assert bool(long_entry_candidate_mask(frame, policy).iloc[-1])
+    assert not bool(
+        long_entry_candidate_mask(frame, CandidatePolicy(volume_multiplier=2.1)).iloc[-1]
+    )
+    monkeypatch.setenv("VOLUME_MULTIPLIER", "999")
+    assert bool(long_entry_candidate_mask(frame, CandidatePolicy()).iloc[-1])
+    assert is_long_entry_candidate(frame.iloc[-1], frame.iloc[-2], policy)
+    checksums = {"csv": "a", "metadata": "b", "report": "c"}
+    splits = {"train": (BASE, BASE + timedelta(hours=1))}
+    identity = _generation_id(checksums, "source", splits, policy, LabelPolicy())
+    changed = _generation_id(
+        checksums,
+        "source",
+        splits,
+        CandidatePolicy(volume_multiplier=1.5),
+        LabelPolicy(),
+    )
+    assert identity != changed
+
+
 def test_atomic_publish_failure_preserves_previous_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -200,9 +363,36 @@ def test_atomic_publish_failure_preserves_previous_generation(
         original_replace(source, target)
 
     monkeypatch.setattr("trading_bot.ml.dataset.os.replace", fail_second_replace)
+    monkeypatch.setattr("trading_bot.ml.dataset._recover_generation", lambda _: None)
+    monkeypatch.setattr("trading_bot.ml.dataset._validate_generation", lambda _: None)
     with pytest.raises(OSError, match="simulated"):
         _atomic_publish(staged, destination)
     assert (destination / "dataset.manifest.json").read_text(encoding="utf-8") == "old"
+
+
+def test_recovery_prefers_valid_destination_and_restores_valid_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "generation"
+    backup = tmp_path / ".generation.previous"
+    destination.mkdir()
+    backup.mkdir()
+    valid: set[Path] = {destination, backup}
+    monkeypatch.setattr("trading_bot.ml.dataset._generation_is_valid", lambda path: path in valid)
+    monkeypatch.setattr("trading_bot.ml.dataset._validate_generation", lambda path: None)
+    _recover_generation(destination)
+    assert destination.exists() and not backup.exists()
+
+    backup.mkdir()
+    valid = {backup}
+    _recover_generation(destination)
+    assert destination.exists() and not backup.exists()
+
+    destination.mkdir(exist_ok=True)
+    backup.mkdir()
+    valid = {destination}
+    _recover_generation(destination)
+    assert destination.exists() and not backup.exists()
 
 
 def test_repeated_publisher_builds_are_byte_identical(
@@ -212,13 +402,21 @@ def test_repeated_publisher_builds_are_byte_identical(
     source.write_text("source", encoding="utf-8")
     source.with_name("btc.csv.metadata.json").write_text("metadata", encoding="utf-8")
     source.with_name("btc.anomalies.json").write_text("report", encoding="utf-8")
-    metadata = {
+    metadata: dict[str, object] = {
         "generation_id": "verified-source",
+        "requested_start": "2022-01-01T00:00:00Z",
         "effective_end": "2026-05-02T00:00:00Z",
     }
+    end = datetime(2026, 5, 2, tzinfo=UTC)
+    count = int((end - BASE) / timedelta(hours=1))
     monkeypatch.setattr(
         "trading_bot.ml.dataset._read_verified_source",
-        lambda _: ([candle(index) for index in range(240)], metadata, set()),
+        lambda _: (
+            [candle(index) for index in range(count)],
+            metadata,
+            set(),
+            source.with_name("btc.anomalies.json"),
+        ),
     )
     monkeypatch.setattr("trading_bot.ml.dataset._non_tradable_open_times", lambda _: set())
     first, second = tmp_path / "first", tmp_path / "second"
