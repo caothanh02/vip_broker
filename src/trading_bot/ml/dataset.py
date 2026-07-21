@@ -14,10 +14,12 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final
 
 import numpy as np
@@ -111,6 +113,33 @@ class DatasetBuildSummary:
     trainable_splits: dict[str, bool]
     candidate_policy: CandidatePolicy
     label_policy: LabelPolicy
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedSourceSnapshot:
+    """Frozen provenance captured before any feature or label computation."""
+
+    input_path: Path
+    metadata_path: Path
+    anomaly_report_path: Path
+    candles: tuple[Candle, ...]
+    metadata: Mapping[str, Any]
+    missing_open_times: frozenset[datetime]
+    source_generation_id: str
+    csv_sha256: str
+    metadata_sha256: str
+    anomaly_report_sha256: str
+    requested_start: datetime
+    effective_end: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetFileStats:
+    row_count: int
+    positive_count: int | None
+    negative_count: int | None
+    first_signal_time: datetime | None
+    last_signal_time: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +262,81 @@ def _non_tradable_open_times(report_path: Path) -> set[datetime]:
                 raise DatasetBuildError("non-tradable interruption time must be UTC")
             result.add(parsed.astimezone(UTC))
     return result
+
+
+def _capture_verified_source(input_path: Path) -> VerifiedSourceSnapshot:
+    # Obtain a stable generation twice.  The second candle read is retained
+    # only when all three artefact hashes stayed identical across the window.
+    candles, metadata, missing, report_path = _read_verified_source(input_path)
+    first_checksums = (
+        _file_sha256(input_path),
+        _file_sha256(metadata_path(input_path)),
+        _file_sha256(report_path),
+    )
+    candles, metadata, missing, report_path = _read_verified_source(input_path)
+    second_checksums = (
+        _file_sha256(input_path),
+        _file_sha256(metadata_path(input_path)),
+        _file_sha256(report_path),
+    )
+    if first_checksums != second_checksums:
+        raise DatasetBuildError("verified source generation changed while capturing snapshot")
+    try:
+        generation_id = metadata["generation_id"]
+    except KeyError as exc:
+        raise DatasetBuildError("verified source generation ID is missing") from exc
+    if not isinstance(generation_id, str) or not generation_id:
+        raise DatasetBuildError("verified source generation ID is invalid")
+    requested_start = _metadata_hour(metadata, "requested_start")
+    effective_end = _metadata_hour(metadata, "effective_end")
+    return VerifiedSourceSnapshot(
+        input_path=input_path,
+        metadata_path=metadata_path(input_path),
+        anomaly_report_path=report_path,
+        candles=tuple(candles),
+        metadata=MappingProxyType(dict(metadata)),
+        missing_open_times=frozenset(missing),
+        source_generation_id=generation_id,
+        csv_sha256=second_checksums[0],
+        metadata_sha256=second_checksums[1],
+        anomaly_report_sha256=second_checksums[2],
+        requested_start=requested_start,
+        effective_end=effective_end,
+    )
+
+
+def _reverify_source_snapshot(snapshot: VerifiedSourceSnapshot) -> None:
+    """Fail closed if any raw generation artefact changed during a build."""
+    try:
+        if not verify_metadata_checksum(snapshot.input_path):
+            raise DatasetBuildError("source metadata verification failed during recheck")
+        raw = json.loads(snapshot.metadata_path.read_text(encoding="utf-8"))
+    except (CsvDataError, OSError, json.JSONDecodeError) as exc:
+        raise DatasetBuildError("source verification failed during recheck") from exc
+    if not isinstance(raw, dict):
+        raise DatasetBuildError("source metadata is invalid during recheck")
+    report_path = _verified_report_path(snapshot.input_path, raw)
+    if (
+        report_path != snapshot.anomaly_report_path
+        or raw.get("generation_id") != snapshot.source_generation_id
+        or _file_sha256(snapshot.input_path) != snapshot.csv_sha256
+        or _file_sha256(snapshot.metadata_path) != snapshot.metadata_sha256
+        or _file_sha256(report_path) != snapshot.anomaly_report_sha256
+    ):
+        raise DatasetBuildError("verified source generation changed during dataset build")
+
+
+def _before_publish_source_recheck(_snapshot: VerifiedSourceSnapshot) -> None:
+    """Dedicated deterministic test seam; production intentionally does nothing."""
+
+
+def _require_supported_policies(
+    candidate_policy: CandidatePolicy, label_policy: LabelPolicy
+) -> None:
+    if candidate_policy != DEFAULT_CANDIDATE_POLICY:
+        raise DatasetBuildError("unsupported candidate policy")
+    if label_policy != DEFAULT_LABEL_POLICY:
+        raise DatasetBuildError("unsupported label policy")
 
 
 def _effective_splits(metadata: dict[str, Any]) -> dict[str, tuple[datetime, datetime]]:
@@ -490,7 +594,7 @@ def _verify_staged_csv(
     split: str,
     split_bounds: tuple[datetime, datetime],
     segment_bounds: dict[str, tuple[str, datetime, datetime]],
-) -> int:
+) -> DatasetFileStats:
     """Validate the generated schema and ensure no future label leaks to holdout."""
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
@@ -498,7 +602,10 @@ def _verify_staged_csv(
             if reader.fieldnames != _output_columns(split):
                 raise DatasetBuildError("staged dataset schema mismatch")
             previous_signal: datetime | None = None
+            first_signal: datetime | None = None
             count = 0
+            positive = 0
+            negative = 0
             for row in reader:
                 if set(row) != set(_output_columns(split)):
                     raise DatasetBuildError("staged dataset row schema mismatch")
@@ -511,6 +618,8 @@ def _verify_staged_csv(
                     raise DatasetBuildError("staged signal/entry leaves its split")
                 if previous_signal is not None and signal <= previous_signal:
                     raise DatasetBuildError("staged signal rows are not strictly ordered")
+                if first_signal is None:
+                    first_signal = signal
                 previous_signal = signal
                 segment = segment_bounds.get(row["segment_id"])
                 if segment is None or segment[0] != split or not (segment[1] <= entry < segment[2]):
@@ -529,8 +638,18 @@ def _verify_staged_csv(
                         raise DatasetBuildError("staged label leaves its split or segment")
                     if not Decimal(row["net_return_after_costs"]).is_finite():
                         raise DatasetBuildError("staged net return is non-finite")
+                    if row["target"] == "1":
+                        positive += 1
+                    else:
+                        negative += 1
                 count += 1
-            return count
+            return DatasetFileStats(
+                count,
+                None if split == FINAL_HOLDOUT else positive,
+                None if split == FINAL_HOLDOUT else negative,
+                first_signal,
+                previous_signal,
+            )
     except (OSError, ValueError, KeyError, InvalidOperation) as exc:
         raise DatasetBuildError("could not validate staged dataset output") from exc
 
@@ -646,14 +765,29 @@ def _validate_generation(directory: Path) -> None:
         label_policy,
     ):
         raise DatasetBuildError("dataset generation identity does not match its policy")
+    file_stats: dict[str, DatasetFileStats] = {}
     for split in [*SPLITS, FINAL_HOLDOUT]:
         filename = f"{split}.csv"
         checksum = checksums.get(filename)
         if not isinstance(checksum, str) or checksum != _file_sha256(directory / filename):
             raise DatasetBuildError("dataset generation output checksum mismatch")
-        count = _verify_staged_csv(directory / filename, split, splits[split], segments)
-        if row_counts.get(split) != count:
+        stats = _verify_staged_csv(directory / filename, split, splits[split], segments)
+        file_stats[split] = stats
+        if row_counts.get(split) != stats.row_count:
             raise DatasetBuildError("dataset generation output row count mismatch")
+    coverage = manifest.get("split_signal_coverage")
+    if not isinstance(coverage, dict):
+        raise DatasetBuildError("dataset generation signal coverage is invalid")
+    for split, stats in file_stats.items():
+        record = coverage.get(split)
+        if (
+            not isinstance(record, dict)
+            or record.get("first_signal_time")
+            != (_iso(stats.first_signal_time) if stats.first_signal_time else None)
+            or record.get("last_signal_time")
+            != (_iso(stats.last_signal_time) if stats.last_signal_time else None)
+        ):
+            raise DatasetBuildError("dataset generation signal coverage mismatch")
     label_counts = manifest.get("development_label_counts")
     trainable = manifest.get("development_trainable")
     if not isinstance(label_counts, dict) or not isinstance(trainable, dict):
@@ -672,6 +806,8 @@ def _validate_generation(directory: Path) -> None:
             or negative < 0
             or timeout < 0
             or row_counts.get(split) != positive + negative
+            or file_stats[split].positive_count != positive
+            or file_stats[split].negative_count != negative
         ):
             raise DatasetBuildError("dataset generation label counts are invalid")
         if trainable.get(split) is not (positive > 0 and negative > 0):
@@ -681,7 +817,14 @@ def _validate_generation(directory: Path) -> None:
 def _generation_is_valid(directory: Path) -> bool:
     try:
         _validate_generation(directory)
-    except DatasetBuildError:
+    except (
+        DatasetBuildError,
+        CsvDataError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+        InvalidOperation,
+    ):
         return False
     return True
 
@@ -730,6 +873,10 @@ def _atomic_publish(staged: Path, destination: Path) -> None:
             if destination.exists():
                 shutil.rmtree(destination)
             os.replace(backup, destination)
+        elif not moved_previous and destination.exists():
+            # First publication: do not leave a corrupt directory which would
+            # make the next fresh build fail closed forever.
+            shutil.rmtree(destination)
         raise
     if backup.exists():
         shutil.rmtree(backup)
@@ -743,11 +890,16 @@ def build_ml_dataset(
     label_policy: LabelPolicy = DEFAULT_LABEL_POLICY,
 ) -> DatasetBuildSummary:
     """Verify a Vision generation and publish a deterministic ML dataset generation."""
-    candles, metadata, missing, report_path = _read_verified_source(input_path)
-    non_tradable = _non_tradable_open_times(report_path)
-    splits = _effective_splits(metadata)
-    _validate_fixed_coverage(candles, splits, missing, non_tradable)
-    segments = _segments(candles, splits, missing, non_tradable)
+    _require_supported_policies(candidate_policy, label_policy)
+    snapshot = _capture_verified_source(input_path)
+    non_tradable = _non_tradable_open_times(snapshot.anomaly_report_path)
+    splits = _effective_splits(dict(snapshot.metadata))
+    _validate_fixed_coverage(
+        list(snapshot.candles), splits, set(snapshot.missing_open_times), non_tradable
+    )
+    segments = _segments(
+        list(snapshot.candles), splits, set(snapshot.missing_open_times), non_tradable
+    )
     rows, candidate_counts, label_counts, exclusions = _build_rows(
         segments, candidate_policy, label_policy
     )
@@ -774,13 +926,13 @@ def build_ml_dataset(
             _write_csv(target, split_rows, split)
             checksums[filename] = _file_sha256(target)
         source_checksums = {
-            "source_csv_sha256": _file_sha256(input_path),
-            "source_metadata_sha256": _file_sha256(metadata_path(input_path)),
-            "anomaly_report_sha256": _file_sha256(report_path),
+            "source_csv_sha256": snapshot.csv_sha256,
+            "source_metadata_sha256": snapshot.metadata_sha256,
+            "anomaly_report_sha256": snapshot.anomaly_report_sha256,
         }
         generation_id = _generation_id(
             source_checksums,
-            str(metadata["generation_id"]),
+            snapshot.source_generation_id,
             splits,
             candidate_policy,
             label_policy,
@@ -788,8 +940,8 @@ def build_ml_dataset(
         manifest = {
             "dataset_generation_id": generation_id,
             **source_checksums,
-            "anomaly_report": report_path.name,
-            "source_generation_id": metadata["generation_id"],
+            "anomaly_report": snapshot.anomaly_report_path.name,
+            "source_generation_id": snapshot.source_generation_id,
             "symbol": "BTC/USDT",
             "timeframe": "1h",
             "splits": {
@@ -818,7 +970,9 @@ def build_ml_dataset(
             "output_file_sha256": checksums,
             "interruption_summary": {
                 "policy_version": SEGMENTATION_POLICY_VERSION,
-                "verified_missing_open_times": [_iso(value) for value in sorted(missing)],
+                "verified_missing_open_times": [
+                    _iso(value) for value in sorted(snapshot.missing_open_times)
+                ],
                 "non_tradable_open_times": [_iso(value) for value in sorted(non_tradable)],
                 "segment_count": len(segments),
             },
@@ -840,13 +994,15 @@ def build_ml_dataset(
         # Read the staged artefacts back before publishing.  The manifest is
         # written last and acts as the generation commit marker.
         for split in rows:
-            verified_count = _verify_staged_csv(
+            verified_stats = _verify_staged_csv(
                 staging / f"{split}.csv", split, splits[split], segment_bounds
             )
-            if verified_count != len(rows[split]):
+            if verified_stats.row_count != len(rows[split]):
                 raise DatasetBuildError("staged output row count mismatch")
             if _file_sha256(staging / f"{split}.csv") != checksums[f"{split}.csv"]:
                 raise DatasetBuildError("staged output checksum mismatch")
+        _before_publish_source_recheck(snapshot)
+        _reverify_source_snapshot(snapshot)
         _atomic_publish(staging, output_dir)
     except Exception:
         if staging.exists():
@@ -854,8 +1010,8 @@ def build_ml_dataset(
         raise
     return DatasetBuildSummary(
         generation_id,
-        str(metadata["generation_id"]),
-        len(candles),
+        snapshot.source_generation_id,
+        len(snapshot.candles),
         len(segments),
         candidate_counts,
         label_counts,

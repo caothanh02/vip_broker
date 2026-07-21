@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -14,12 +15,14 @@ from trading_bot.ml.dataset import (
     CandidatePolicy,
     DatasetBuildError,
     LabelPolicy,
+    VerifiedSourceSnapshot,
     _atomic_publish,
     _effective_splits,
     _generation_id,
     _label,
     _output_columns,
     _recover_generation,
+    _reverify_source_snapshot,
     _Segment,
     _segment_frame,
     _segments,
@@ -290,8 +293,21 @@ def test_public_builder_rejects_verified_but_partial_fixed_range(
         "effective_end": "2026-05-02T00:00:00Z",
     }
     monkeypatch.setattr(
-        "trading_bot.ml.dataset._read_verified_source",
-        lambda _: ([candle(index) for index in range(240)], metadata, set(), report),
+        "trading_bot.ml.dataset._capture_verified_source",
+        lambda _: VerifiedSourceSnapshot(
+            source,
+            source.with_name("btc.csv.metadata.json"),
+            report,
+            tuple(candle(index) for index in range(240)),
+            metadata,
+            frozenset(),
+            "verified-source",
+            "csv",
+            "metadata",
+            "report",
+            BASE,
+            datetime(2026, 5, 2, tzinfo=UTC),
+        ),
     )
     monkeypatch.setattr("trading_bot.ml.dataset._non_tradable_open_times", lambda _: set())
     with pytest.raises(DatasetBuildError, match="fixed split coverage is incomplete"):
@@ -344,6 +360,61 @@ def test_candidate_policy_is_reproducible_and_matches_execution_predicate(
         LabelPolicy(),
     )
     assert identity != changed
+
+
+def test_source_snapshot_reverification_rejects_changed_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.csv"
+    metadata_path = source.with_name("source.csv.metadata.json")
+    report = tmp_path / "report.json"
+    source.write_text("csv-a", encoding="utf-8")
+    metadata_path.write_text(
+        '{"generation_id":"generation-a","anomaly_report":"report.json"}', encoding="utf-8"
+    )
+    report.write_text("{}", encoding="utf-8")
+    snapshot = VerifiedSourceSnapshot(
+        source,
+        metadata_path,
+        report,
+        tuple(),
+        {},
+        frozenset(),
+        "generation-a",
+        hashlib.sha256(b"csv-a").hexdigest(),
+        hashlib.sha256(metadata_path.read_bytes()).hexdigest(),
+        hashlib.sha256(b"{}").hexdigest(),
+        BASE,
+        BASE + timedelta(hours=1),
+    )
+    monkeypatch.setattr("trading_bot.ml.dataset.verify_metadata_checksum", lambda _: True)
+    _reverify_source_snapshot(snapshot)
+    source.write_text("csv-b", encoding="utf-8")
+    with pytest.raises(DatasetBuildError, match="changed"):
+        _reverify_source_snapshot(snapshot)
+
+
+@pytest.mark.parametrize(
+    ("candidate_policy", "label_policy"),
+    [
+        (CandidatePolicy(ema_fast=21), LabelPolicy()),
+        (CandidatePolicy(atr_window=15), LabelPolicy()),
+        (CandidatePolicy(volume_multiplier=1.3), LabelPolicy()),
+        (CandidatePolicy(), LabelPolicy(entry_timing="same_open")),
+        (CandidatePolicy(), LabelPolicy(same_candle_resolution="target_first")),
+        (CandidatePolicy(), LabelPolicy(max_holding_candles=49)),
+    ],
+)
+def test_public_builder_rejects_unsupported_policies(
+    tmp_path: Path, candidate_policy: CandidatePolicy, label_policy: LabelPolicy
+) -> None:
+    with pytest.raises(DatasetBuildError, match="unsupported"):
+        build_ml_dataset(
+            tmp_path / "missing.csv",
+            tmp_path / "output",
+            candidate_policy=candidate_policy,
+            label_policy=label_policy,
+        )
 
 
 def test_atomic_publish_failure_preserves_previous_generation(
@@ -410,15 +481,24 @@ def test_repeated_publisher_builds_are_byte_identical(
     end = datetime(2026, 5, 2, tzinfo=UTC)
     count = int((end - BASE) / timedelta(hours=1))
     monkeypatch.setattr(
-        "trading_bot.ml.dataset._read_verified_source",
-        lambda _: (
-            [candle(index) for index in range(count)],
-            metadata,
-            set(),
+        "trading_bot.ml.dataset._capture_verified_source",
+        lambda _: VerifiedSourceSnapshot(
+            source,
+            source.with_name("btc.csv.metadata.json"),
             source.with_name("btc.anomalies.json"),
+            tuple(candle(index) for index in range(count)),
+            metadata,
+            frozenset(),
+            "verified-source",
+            "csv",
+            "metadata",
+            "report",
+            BASE,
+            end,
         ),
     )
     monkeypatch.setattr("trading_bot.ml.dataset._non_tradable_open_times", lambda _: set())
+    monkeypatch.setattr("trading_bot.ml.dataset._reverify_source_snapshot", lambda _: None)
     first, second = tmp_path / "first", tmp_path / "second"
     build_ml_dataset(source, first)
     build_ml_dataset(source, second)
