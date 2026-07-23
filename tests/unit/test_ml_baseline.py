@@ -345,14 +345,12 @@ def test_training_rejects_checksum_mismatch(tmp_path: Path) -> None:
         lambda manifest, directory: manifest["development_label_counts"]["train"].update(
             {"positive": 99}
         ),
-        lambda manifest, directory: _tamper_train_timestamp(directory),
     ],
     ids=[
         "unsupported-policy",
         "noncanonical-split",
         "forged-identity",
         "count-mismatch",
-        "time-outside-segment",
     ],
 )
 def test_training_rejects_provenance_tampering(
@@ -367,13 +365,173 @@ def test_training_rejects_provenance_tampering(
     assert not (tmp_path / "model").exists()
 
 
-def _tamper_train_timestamp(directory: Path) -> None:
+def _tamper_train_timestamp(manifest: dict[str, Any], directory: Path) -> None:
     rows = list(csv.DictReader((directory / "train.csv").open(encoding="utf-8", newline="")))
     rows[0]["signal_time"] = "2021-12-31T23:00:00Z"
     _write_csv(directory / "train.csv", rows, "train")
-    manifest = _read_manifest(directory)
     manifest["output_file_sha256"]["train.csv"] = _sha256(directory / "train.csv")
-    _write_manifest(directory, manifest)
+
+
+def test_training_rejects_timestamp_tampering_for_the_semantic_reason(tmp_path: Path) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    manifest = _read_manifest(dataset)
+    _tamper_train_timestamp(manifest, dataset)
+    _write_manifest(dataset, manifest)
+    with pytest.raises(BaselineTrainingError, match="development dataset generation") as raised:
+        train_logistic_baseline(dataset, tmp_path / "model")
+    assert isinstance(raised.value.__cause__, DatasetBuildError)
+    assert "staged signal/entry leaves its split" in str(raised.value.__cause__)
+    assert not (tmp_path / "model").exists()
+
+
+def _validate_development_without_final_filesystem_access(
+    dataset: Path, monkeypatch: pytest.MonkeyPatch
+) -> Any:
+    final_path = dataset / "final_holdout.csv"
+    original_open, original_stat = Path.open, Path.stat
+
+    def reject_final_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        if path == final_path:
+            raise AssertionError("development validator accessed final holdout")
+        return original_open(path, *args, **kwargs)
+
+    def reject_final_stat(path: Path, *args: Any, **kwargs: Any) -> Any:
+        if path == final_path:
+            raise AssertionError("development validator accessed final holdout")
+        return original_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "open", reject_final_open)
+        scoped.setattr(Path, "stat", reject_final_stat)
+        return validate_development_dataset_generation(dataset)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "accepted"),
+    [
+        (
+            lambda manifest: (
+                manifest["row_counts"].update({FINAL_HOLDOUT: 0}),
+                manifest["candidate_counts"].update({FINAL_HOLDOUT: 1}),
+                manifest["excluded_row_counts"].update({"missing_next_open": 1}),
+                manifest["split_signal_coverage"].update(
+                    {FINAL_HOLDOUT: {"first_signal_time": None, "last_signal_time": None}}
+                ),
+            ),
+            True,
+        ),
+        (lambda manifest: manifest["candidate_counts"].update({FINAL_HOLDOUT: 0}), False),
+        (
+            lambda manifest: manifest["candidate_counts"].update({FINAL_HOLDOUT: 2}),
+            False,
+        ),
+        (lambda manifest: manifest["candidate_counts"].update({FINAL_HOLDOUT: True}), False),
+        (lambda manifest: manifest["candidate_counts"].update({FINAL_HOLDOUT: -1}), False),
+        (lambda manifest: manifest["row_counts"].update({FINAL_HOLDOUT: -1}), False),
+        (
+            lambda manifest: manifest["excluded_row_counts"].update({"missing_next_open": True}),
+            False,
+        ),
+        (
+            lambda manifest: manifest["excluded_row_counts"].update({"missing_next_open": -1}),
+            False,
+        ),
+        (lambda manifest: manifest.update({"excluded_row_counts": []}), False),
+    ],
+    ids=[
+        "missing-next-open-exclusion",
+        "candidate-less-than-rows",
+        "unexplained-candidate-difference",
+        "candidate-bool",
+        "candidate-negative",
+        "row-negative",
+        "missing-next-open-bool",
+        "missing-next-open-negative",
+        "excluded-row-counts-not-dict",
+    ],
+)
+def test_development_validator_checks_final_candidate_row_invariant_without_opening_final_holdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: Callable[[dict[str, Any]], object],
+    accepted: bool,
+) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    manifest = _read_manifest(dataset)
+    mutate(manifest)
+    _write_manifest(dataset, manifest)
+    if accepted:
+        _validate_development_without_final_filesystem_access(dataset, monkeypatch)
+    else:
+        with pytest.raises(DatasetBuildError):
+            _validate_development_without_final_filesystem_access(dataset, monkeypatch)
+
+
+def _set_two_final_holdout_segments(manifest: dict[str, Any]) -> None:
+    manifest["segments"][f"{FINAL_HOLDOUT}-0"]["end"] = "2026-05-01T02:00:00Z"
+    manifest["segments"][f"{FINAL_HOLDOUT}-1"] = {
+        "split": FINAL_HOLDOUT,
+        "start": "2026-05-01T04:00:00Z",
+        "end": "2026-05-03T00:00:00Z",
+    }
+
+
+def test_development_validator_accepts_final_coverage_across_multiple_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    manifest = _read_manifest(dataset)
+    _set_two_final_holdout_segments(manifest)
+    manifest["split_signal_coverage"][FINAL_HOLDOUT] = {
+        "first_signal_time": "2026-05-01T01:00:00Z",
+        "last_signal_time": "2026-05-01T04:00:00Z",
+    }
+    _write_manifest(dataset, manifest)
+    _validate_development_without_final_filesystem_access(dataset, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "coverage",
+    [
+        {"first_signal_time": "2026-05-01T03:00:00Z", "last_signal_time": "2026-05-01T04:00:00Z"},
+        {"first_signal_time": "2026-05-01T01:00:00Z", "last_signal_time": "2026-05-01T03:00:00Z"},
+    ],
+    ids=["first-in-interruption-gap", "last-in-interruption-gap"],
+)
+def test_development_validator_rejects_final_coverage_inside_interruption_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: dict[str, str]
+) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    manifest = _read_manifest(dataset)
+    _set_two_final_holdout_segments(manifest)
+    manifest["split_signal_coverage"][FINAL_HOLDOUT] = coverage
+    _write_manifest(dataset, manifest)
+    with pytest.raises(DatasetBuildError):
+        _validate_development_without_final_filesystem_access(dataset, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda manifest: manifest["segments"][f"{FINAL_HOLDOUT}-0"].update(
+            {"end": "2026-05-02T00:00:00Z"}
+        ),
+        lambda manifest: manifest["segments"][f"{FINAL_HOLDOUT}-0"].update(
+            {"start": "2026-04-30T23:00:00Z"}
+        ),
+    ],
+    ids=["overlap", "outside-split"],
+)
+def test_development_validator_still_rejects_invalid_final_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate: Callable[[dict[str, Any]], None]
+) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    manifest = _read_manifest(dataset)
+    _set_two_final_holdout_segments(manifest)
+    mutate(manifest)
+    _write_manifest(dataset, manifest)
+    with pytest.raises(DatasetBuildError):
+        _validate_development_without_final_filesystem_access(dataset, monkeypatch)
 
 
 @pytest.mark.parametrize(
@@ -412,23 +570,8 @@ def test_development_validator_rejects_bad_final_metadata_without_opening_final_
     manifest = _read_manifest(dataset)
     mutate(manifest)
     _write_manifest(dataset, manifest)
-    final_path = dataset / "final_holdout.csv"
-    original_open, original_stat = Path.open, Path.stat
-
-    def reject_final_open(path: Path, *args: Any, **kwargs: Any) -> Any:
-        if path == final_path:
-            raise AssertionError("development validator accessed final holdout")
-        return original_open(path, *args, **kwargs)
-
-    def reject_final_stat(path: Path, *args: Any, **kwargs: Any) -> Any:
-        if path == final_path:
-            raise AssertionError("development validator accessed final holdout")
-        return original_stat(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", reject_final_open)
-    monkeypatch.setattr(Path, "stat", reject_final_stat)
     with pytest.raises(DatasetBuildError):
-        validate_development_dataset_generation(dataset)
+        _validate_development_without_final_filesystem_access(dataset, monkeypatch)
 
 
 def test_train_cli_fails_closed_for_invalid_dataset(

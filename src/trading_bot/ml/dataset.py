@@ -827,6 +827,7 @@ def _validate_generation_contents(
         expected_files = {f"{split}.csv" for split in CANONICAL_SPLIT_NAMES}
         candidates = manifest.get("candidate_counts")
         coverage = manifest.get("split_signal_coverage")
+        exclusions = manifest.get("excluded_row_counts")
         if (
             set(checksums) != expected_files
             or not all(
@@ -841,7 +842,16 @@ def _validate_generation_contents(
             or type(row_counts[FINAL_HOLDOUT]) is not int
             or row_counts[FINAL_HOLDOUT] < 0
             or type(candidates[FINAL_HOLDOUT]) is not int
-            or candidates[FINAL_HOLDOUT] != row_counts[FINAL_HOLDOUT]
+            or candidates[FINAL_HOLDOUT] < 0
+            or candidates[FINAL_HOLDOUT] < row_counts[FINAL_HOLDOUT]
+            or not isinstance(exclusions, dict)
+        ):
+            raise DatasetBuildError("development final-holdout metadata is invalid")
+        missing_next_open = exclusions.get("missing_next_open", 0)
+        if (
+            type(missing_next_open) is not int
+            or missing_next_open < 0
+            or candidates[FINAL_HOLDOUT] - row_counts[FINAL_HOLDOUT] > missing_next_open
         ):
             raise DatasetBuildError("development final-holdout metadata is invalid")
         final_coverage = coverage[FINAL_HOLDOUT]
@@ -861,12 +871,18 @@ def _validate_generation_contents(
             final_start, final_end = splits[FINAL_HOLDOUT]
             first_time = _parse_hour_time(first, "final holdout first signal")
             last_time = _parse_hour_time(last, "final holdout last signal")
-            covered_by_final_segment = any(
-                split == FINAL_HOLDOUT and start <= first_time <= last_time < end
+            first_in_final_segment = any(
+                split == FINAL_HOLDOUT and start <= first_time < end
+                for split, start, end in segments.values()
+            )
+            last_in_final_segment = any(
+                split == FINAL_HOLDOUT and start <= last_time < end
                 for split, start, end in segments.values()
             )
             if not (
-                final_start <= first_time <= last_time < final_end and covered_by_final_segment
+                final_start <= first_time <= last_time < final_end
+                and first_in_final_segment
+                and last_in_final_segment
             ):
                 raise DatasetBuildError("development final-holdout coverage is invalid")
     try:
