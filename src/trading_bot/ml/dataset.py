@@ -50,6 +50,7 @@ SPLITS: Final = {
     "test": (datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 5, 1, tzinfo=UTC)),
 }
 FINAL_HOLDOUT: Final = "final_holdout"
+CANONICAL_SPLIT_NAMES: Final = (*SPLITS, FINAL_HOLDOUT)
 AUDIT_COLUMNS: Final = [
     "split",
     "segment_id",
@@ -580,6 +581,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], split: str) -> None:
 
 
 def _parse_output_time(value: str, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise DatasetBuildError(f"invalid staged {field}")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
@@ -587,6 +590,16 @@ def _parse_output_time(value: str, field: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
         raise DatasetBuildError(f"staged {field} must be UTC")
     return parsed.astimezone(UTC)
+
+
+def _parse_hour_time(value: object, field: str) -> datetime:
+    """Parse an explicit UTC hour boundary from immutable manifest metadata."""
+    if not isinstance(value, str):
+        raise DatasetBuildError(f"invalid staged {field}")
+    parsed = _parse_output_time(value, field)
+    if parsed.minute or parsed.second or parsed.microsecond:
+        raise DatasetBuildError(f"staged {field} must be UTC hour-aligned")
+    return parsed
 
 
 def _verify_staged_csv(
@@ -622,7 +635,11 @@ def _verify_staged_csv(
                     first_signal = signal
                 previous_signal = signal
                 segment = segment_bounds.get(row["segment_id"])
-                if segment is None or segment[0] != split or not (segment[1] <= entry < segment[2]):
+                if (
+                    segment is None
+                    or segment[0] != split
+                    or not (segment[1] <= signal <= entry < segment[2])
+                ):
                     raise DatasetBuildError("staged row has an invalid segment")
                 for column in FEATURE_COLUMNS:
                     value = float(row[column])
@@ -634,7 +651,7 @@ def _verify_staged_csv(
                     if (row["target"] == "1") != (row["outcome"] == "profit"):
                         raise DatasetBuildError("staged target and outcome disagree")
                     label_end = _parse_output_time(row["label_end_time"], "label_end_time")
-                    if not (entry <= label_end < end and label_end <= segment[2]):
+                    if not (entry <= label_end <= end and label_end <= segment[2]):
                         raise DatasetBuildError("staged label leaves its split or segment")
                     if not Decimal(row["net_return_after_costs"]).is_finite():
                         raise DatasetBuildError("staged net return is non-finite")
@@ -650,7 +667,9 @@ def _verify_staged_csv(
                 first_signal,
                 previous_signal,
             )
-    except (OSError, ValueError, KeyError, InvalidOperation) as exc:
+    except DatasetBuildError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, InvalidOperation, csv.Error) as exc:
         raise DatasetBuildError("could not validate staged dataset output") from exc
 
 
@@ -662,46 +681,100 @@ def _output_times(rows: list[dict[str, Any]]) -> dict[str, str | None]:
     }
 
 
-def _manifest_segment_bounds(payload: dict[str, Any]) -> dict[str, tuple[str, datetime, datetime]]:
+def _manifest_segment_bounds(
+    payload: dict[str, Any], splits: dict[str, tuple[datetime, datetime]]
+) -> dict[str, tuple[str, datetime, datetime]]:
     records = payload.get("segments")
-    if not isinstance(records, dict):
+    if not isinstance(records, dict) or not records:
         raise DatasetBuildError("dataset manifest segments are invalid")
+    if list(records) != sorted(records):
+        raise DatasetBuildError("dataset manifest segment ordering is invalid")
     result: dict[str, tuple[str, datetime, datetime]] = {}
     for segment_id, record in records.items():
-        if not isinstance(segment_id, str) or not isinstance(record, dict):
+        if (
+            not isinstance(segment_id, str)
+            or not segment_id.strip()
+            or not isinstance(record, dict)
+        ):
             raise DatasetBuildError("dataset manifest segment is invalid")
         split = record.get("split")
-        if not isinstance(split, str):
+        if not isinstance(split, str) or split not in splits:
             raise DatasetBuildError("dataset manifest segment split is invalid")
-        start = _parse_output_time(str(record.get("start")), "segment start")
-        end = _parse_output_time(str(record.get("end")), "segment end")
+        start = _parse_hour_time(record.get("start"), "segment start")
+        end = _parse_hour_time(record.get("end"), "segment end")
         if end <= start:
             raise DatasetBuildError("dataset manifest segment duration is invalid")
+        split_start, split_end = splits[split]
+        if not (split_start <= start < end <= split_end):
+            raise DatasetBuildError("dataset manifest segment leaves its split")
+        if segment_id in result:
+            raise DatasetBuildError("dataset manifest segment ID is duplicated")
         result[segment_id] = (split, start, end)
+    if {record[0] for record in result.values()} != set(CANONICAL_SPLIT_NAMES):
+        raise DatasetBuildError("dataset manifest segments do not cover every split")
+    by_split: dict[str, list[tuple[datetime, datetime, str]]] = {
+        split: [] for split in CANONICAL_SPLIT_NAMES
+    }
+    for segment_id, (split, start, end) in result.items():
+        by_split[split].append((start, end, segment_id))
+    for split_records in by_split.values():
+        previous_end: datetime | None = None
+        for start, end, _ in sorted(split_records):
+            if previous_end is not None and start < previous_end:
+                raise DatasetBuildError("dataset manifest segments overlap")
+            previous_end = end
     return result
 
 
 def _manifest_splits(payload: dict[str, Any]) -> dict[str, tuple[datetime, datetime]]:
     raw = payload.get("splits")
-    if not isinstance(raw, dict):
+    if not isinstance(raw, dict) or set(raw) != set(CANONICAL_SPLIT_NAMES):
         raise DatasetBuildError("dataset manifest splits are invalid")
     result: dict[str, tuple[datetime, datetime]] = {}
-    for split in [*SPLITS, FINAL_HOLDOUT]:
+    for split in CANONICAL_SPLIT_NAMES:
         record = raw.get(split)
         if not isinstance(record, dict):
             raise DatasetBuildError("dataset manifest split is invalid")
-        start = _parse_output_time(str(record.get("start")), "split start")
-        end = _parse_output_time(str(record.get("end")), "split end")
+        start = _parse_hour_time(record.get("start"), "split start")
+        end = _parse_hour_time(record.get("end"), "split end")
         if end <= start:
             raise DatasetBuildError("dataset manifest split duration is invalid")
         result[split] = (start, end)
+    for split, bounds in SPLITS.items():
+        if result[split] != bounds:
+            raise DatasetBuildError("dataset manifest split boundaries are noncanonical")
+    holdout_start, holdout_end = result[FINAL_HOLDOUT]
+    if holdout_start != SPLITS["test"][1] or holdout_end <= holdout_start:
+        raise DatasetBuildError("dataset manifest final holdout boundaries are noncanonical")
+    return result
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate manifest keys instead of silently accepting the last one."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise DatasetBuildError("dataset generation manifest has duplicate keys")
+        result[key] = value
     return result
 
 
 def _validate_generation(directory: Path) -> None:
+    """Validate a published generation, normalizing expected corruption failures."""
+    try:
+        _validate_generation_contents(directory)
+    except DatasetBuildError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, InvalidOperation, csv.Error) as exc:
+        raise DatasetBuildError("dataset generation is corrupt or incomplete") from exc
+
+
+def _validate_generation_contents(directory: Path) -> None:
     manifest_path = directory / "dataset.manifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(
+            manifest_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
+        )
     except (OSError, json.JSONDecodeError) as exc:
         raise DatasetBuildError("dataset generation manifest is invalid") from exc
     if not isinstance(manifest, dict):
@@ -737,7 +810,7 @@ def _validate_generation(directory: Path) -> None:
     if not isinstance(checksums, dict) or not isinstance(row_counts, dict):
         raise DatasetBuildError("dataset generation checksum or count metadata is invalid")
     splits = _manifest_splits(manifest)
-    segments = _manifest_segment_bounds(manifest)
+    segments = _manifest_segment_bounds(manifest, splits)
     try:
         candidate_policy = CandidatePolicy(**manifest["candidate_policy"])
         label_values = dict(manifest["label_policy"])
@@ -757,6 +830,14 @@ def _validate_generation(directory: Path) -> None:
         }
     except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
         raise DatasetBuildError("dataset generation policy metadata is invalid") from exc
+    if manifest.get("symbol") != "BTC/USDT" or manifest.get("timeframe") != "1h":
+        raise DatasetBuildError("dataset generation market metadata is invalid")
+    if (
+        candidate_policy.symbol != manifest["symbol"]
+        or candidate_policy.timeframe != manifest["timeframe"]
+    ):
+        raise DatasetBuildError("dataset generation candidate market metadata is invalid")
+    _require_supported_policies(candidate_policy, label_policy)
     if manifest["dataset_generation_id"] != _generation_id(
         source_checksums,
         manifest["source_generation_id"],
@@ -766,7 +847,7 @@ def _validate_generation(directory: Path) -> None:
     ):
         raise DatasetBuildError("dataset generation identity does not match its policy")
     file_stats: dict[str, DatasetFileStats] = {}
-    for split in [*SPLITS, FINAL_HOLDOUT]:
+    for split in CANONICAL_SPLIT_NAMES:
         filename = f"{split}.csv"
         checksum = checksums.get(filename)
         if not isinstance(checksum, str) or checksum != _file_sha256(directory / filename):
@@ -790,18 +871,23 @@ def _validate_generation(directory: Path) -> None:
             raise DatasetBuildError("dataset generation signal coverage mismatch")
     label_counts = manifest.get("development_label_counts")
     trainable = manifest.get("development_trainable")
-    if not isinstance(label_counts, dict) or not isinstance(trainable, dict):
+    if (
+        not isinstance(label_counts, dict)
+        or not isinstance(trainable, dict)
+        or set(label_counts) != set(SPLITS)
+        or set(trainable) != set(SPLITS)
+    ):
         raise DatasetBuildError("dataset generation development metadata is invalid")
     for split in SPLITS:
         counts = label_counts.get(split)
-        if not isinstance(counts, dict):
+        if not isinstance(counts, dict) or set(counts) != {"positive", "negative", "timeout"}:
             raise DatasetBuildError("dataset generation label counts are invalid")
         positive, negative = counts.get("positive"), counts.get("negative")
         timeout = counts.get("timeout")
         if (
-            not isinstance(positive, int)
-            or not isinstance(negative, int)
-            or not isinstance(timeout, int)
+            type(positive) is not int
+            or type(negative) is not int
+            or type(timeout) is not int
             or positive < 0
             or negative < 0
             or timeout < 0
@@ -810,21 +896,16 @@ def _validate_generation(directory: Path) -> None:
             or file_stats[split].negative_count != negative
         ):
             raise DatasetBuildError("dataset generation label counts are invalid")
-        if trainable.get(split) is not (positive > 0 and negative > 0):
+        if type(trainable.get(split)) is not bool or trainable[split] is not (
+            positive > 0 and negative > 0
+        ):
             raise DatasetBuildError("dataset generation trainable status is invalid")
 
 
 def _generation_is_valid(directory: Path) -> bool:
     try:
         _validate_generation(directory)
-    except (
-        DatasetBuildError,
-        CsvDataError,
-        OSError,
-        ValueError,
-        json.JSONDecodeError,
-        InvalidOperation,
-    ):
+    except DatasetBuildError:
         return False
     return True
 
