@@ -11,6 +11,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -20,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import numpy as np
 import pandas as pd
@@ -769,6 +770,15 @@ def _validate_generation(directory: Path) -> None:
         raise DatasetBuildError("dataset generation is corrupt or incomplete") from exc
 
 
+def _freeze_manifest_value(value: Any) -> Any:
+    """Return an immutable snapshot so downstream consumers cannot alter validation input."""
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_manifest_value(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_manifest_value(item) for item in value)
+    return value
+
+
 def _validate_generation_contents(
     directory: Path, *, development_only: bool = False
 ) -> Mapping[str, Any]:
@@ -813,6 +823,52 @@ def _validate_generation_contents(
         raise DatasetBuildError("dataset generation checksum or count metadata is invalid")
     splits = _manifest_splits(manifest)
     segments = _manifest_segment_bounds(manifest, splits)
+    if development_only:
+        expected_files = {f"{split}.csv" for split in CANONICAL_SPLIT_NAMES}
+        candidates = manifest.get("candidate_counts")
+        coverage = manifest.get("split_signal_coverage")
+        if (
+            set(checksums) != expected_files
+            or not all(
+                isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                for value in checksums.values()
+            )
+            or set(row_counts) != set(CANONICAL_SPLIT_NAMES)
+            or not isinstance(candidates, dict)
+            or set(candidates) != set(CANONICAL_SPLIT_NAMES)
+            or not isinstance(coverage, dict)
+            or set(coverage) != set(CANONICAL_SPLIT_NAMES)
+            or type(row_counts[FINAL_HOLDOUT]) is not int
+            or row_counts[FINAL_HOLDOUT] < 0
+            or type(candidates[FINAL_HOLDOUT]) is not int
+            or candidates[FINAL_HOLDOUT] != row_counts[FINAL_HOLDOUT]
+        ):
+            raise DatasetBuildError("development final-holdout metadata is invalid")
+        final_coverage = coverage[FINAL_HOLDOUT]
+        if not isinstance(final_coverage, dict) or set(final_coverage) != {
+            "first_signal_time",
+            "last_signal_time",
+        }:
+            raise DatasetBuildError("development final-holdout coverage is invalid")
+        first, last = (
+            final_coverage.get("first_signal_time"),
+            final_coverage.get("last_signal_time"),
+        )
+        if row_counts[FINAL_HOLDOUT] == 0:
+            if first is not None or last is not None:
+                raise DatasetBuildError("empty final-holdout coverage is invalid")
+        else:
+            final_start, final_end = splits[FINAL_HOLDOUT]
+            first_time = _parse_hour_time(first, "final holdout first signal")
+            last_time = _parse_hour_time(last, "final holdout last signal")
+            covered_by_final_segment = any(
+                split == FINAL_HOLDOUT and start <= first_time <= last_time < end
+                for split, start, end in segments.values()
+            )
+            if not (
+                final_start <= first_time <= last_time < final_end and covered_by_final_segment
+            ):
+                raise DatasetBuildError("development final-holdout coverage is invalid")
     try:
         candidate_policy = CandidatePolicy(**manifest["candidate_policy"])
         label_values = dict(manifest["label_policy"])
@@ -903,7 +959,7 @@ def _validate_generation_contents(
             positive > 0 and negative > 0
         ):
             raise DatasetBuildError("dataset generation trainable status is invalid")
-    return MappingProxyType(dict(manifest))
+    return cast(Mapping[str, Any], _freeze_manifest_value(manifest))
 
 
 def validate_development_dataset_generation(directory: Path) -> Mapping[str, Any]:
