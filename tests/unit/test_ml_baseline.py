@@ -12,7 +12,18 @@ from trading_bot.cli import main
 from trading_bot.features.pipeline import FEATURE_COLUMNS, FEATURE_SCHEMA_VERSION
 from trading_bot.ml import baseline
 from trading_bot.ml.baseline import BaselineTrainingError, train_logistic_baseline
-from trading_bot.ml.dataset import AUDIT_COLUMNS, LABEL_COLUMNS
+from trading_bot.ml.dataset import AUDIT_COLUMNS, LABEL_COLUMNS, DatasetBuildError
+
+
+@pytest.fixture(autouse=True)
+def _validated_fixture_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    def validate(directory: Path) -> dict[str, object]:
+        try:
+            return json.loads((directory / "dataset.manifest.json").read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise DatasetBuildError("dataset manifest is missing") from exc
+
+    monkeypatch.setattr(baseline, "validate_development_dataset_generation", validate)
 
 
 def _sha256(path: Path) -> str:
@@ -214,4 +225,4 @@ def test_train_cli_fails_closed_for_invalid_dataset(
         ]
     )
     assert status == 1
-    assert "dataset manifest" in capsys.readouterr().err
+    assert "development dataset generation" in capsys.readouterr().err

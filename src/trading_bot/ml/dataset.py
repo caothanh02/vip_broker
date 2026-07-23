@@ -769,7 +769,9 @@ def _validate_generation(directory: Path) -> None:
         raise DatasetBuildError("dataset generation is corrupt or incomplete") from exc
 
 
-def _validate_generation_contents(directory: Path) -> None:
+def _validate_generation_contents(
+    directory: Path, *, development_only: bool = False
+) -> Mapping[str, Any]:
     manifest_path = directory / "dataset.manifest.json"
     try:
         manifest = json.loads(
@@ -847,7 +849,8 @@ def _validate_generation_contents(directory: Path) -> None:
     ):
         raise DatasetBuildError("dataset generation identity does not match its policy")
     file_stats: dict[str, DatasetFileStats] = {}
-    for split in CANONICAL_SPLIT_NAMES:
+    validated_splits = SPLITS if development_only else CANONICAL_SPLIT_NAMES
+    for split in validated_splits:
         filename = f"{split}.csv"
         checksum = checksums.get(filename)
         if not isinstance(checksum, str) or checksum != _file_sha256(directory / filename):
@@ -900,6 +903,17 @@ def _validate_generation_contents(directory: Path) -> None:
             positive > 0 and negative > 0
         ):
             raise DatasetBuildError("dataset generation trainable status is invalid")
+    return MappingProxyType(dict(manifest))
+
+
+def validate_development_dataset_generation(directory: Path) -> Mapping[str, Any]:
+    """Validate only train/validation/test without any final-holdout filesystem access."""
+    try:
+        return _validate_generation_contents(directory, development_only=True)
+    except DatasetBuildError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, InvalidOperation, csv.Error) as exc:
+        raise DatasetBuildError("development dataset generation is corrupt or incomplete") from exc
 
 
 def _generation_is_valid(directory: Path) -> bool:

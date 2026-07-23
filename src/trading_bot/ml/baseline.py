@@ -12,6 +12,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -25,7 +26,12 @@ from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_s
 from sklearn.preprocessing import StandardScaler
 
 from trading_bot.features.pipeline import FEATURE_COLUMNS, FEATURE_SCHEMA_VERSION
-from trading_bot.ml.dataset import AUDIT_COLUMNS, LABEL_COLUMNS
+from trading_bot.ml.dataset import (
+    AUDIT_COLUMNS,
+    LABEL_COLUMNS,
+    DatasetBuildError,
+    validate_development_dataset_generation,
+)
 
 DEVELOPMENT_SPLITS: Final = ("train", "validation", "test")
 THRESHOLD_POLICY_VERSION: Final = "1.0.0"
@@ -72,24 +78,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _read_manifest(dataset_dir: Path) -> dict[str, Any]:
-    try:
-        manifest = json.loads((dataset_dir / "dataset.manifest.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise BaselineTrainingError("dataset manifest is missing or invalid") from exc
-    if (
-        not isinstance(manifest, dict)
-        or not isinstance(manifest.get("dataset_generation_id"), str)
-        or not isinstance(manifest.get("source_generation_id"), str)
-        or manifest.get("feature_schema_version") != FEATURE_SCHEMA_VERSION
-        or manifest.get("feature_columns") != FEATURE_COLUMNS
-        or not isinstance(manifest.get("output_file_sha256"), dict)
-    ):
-        raise BaselineTrainingError("dataset manifest schema or provenance is invalid")
-    return manifest
-
-
-def _load_split(dataset_dir: Path, manifest: dict[str, Any], split: str) -> SplitData:
+def _load_split(dataset_dir: Path, manifest: Mapping[str, Any], split: str) -> SplitData:
     if split not in DEVELOPMENT_SPLITS:
         raise BaselineTrainingError("final holdout is sealed from baseline training")
     path = dataset_dir / f"{split}.csv"
@@ -139,8 +128,11 @@ def _load_split(dataset_dir: Path, manifest: dict[str, Any], split: str) -> Spli
     )
 
 
-def _load_training_data(dataset_dir: Path) -> tuple[dict[str, SplitData], dict[str, Any]]:
-    manifest = _read_manifest(dataset_dir)
+def _load_training_data(dataset_dir: Path) -> tuple[dict[str, SplitData], Mapping[str, Any]]:
+    try:
+        manifest = validate_development_dataset_generation(dataset_dir)
+    except DatasetBuildError as exc:
+        raise BaselineTrainingError("development dataset generation is invalid") from exc
     splits = {split: _load_split(dataset_dir, manifest, split) for split in ("train", "validation")}
     return splits, manifest
 
