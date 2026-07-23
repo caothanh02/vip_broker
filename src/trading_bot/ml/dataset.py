@@ -651,7 +651,7 @@ def _verify_staged_csv(
                     if (row["target"] == "1") != (row["outcome"] == "profit"):
                         raise DatasetBuildError("staged target and outcome disagree")
                     label_end = _parse_output_time(row["label_end_time"], "label_end_time")
-                    if not (entry <= label_end <= end and label_end <= segment[2]):
+                    if not (entry <= label_end < end and label_end <= segment[2]):
                         raise DatasetBuildError("staged label leaves its split or segment")
                     if not Decimal(row["net_return_after_costs"]).is_finite():
                         raise DatasetBuildError("staged net return is non-finite")

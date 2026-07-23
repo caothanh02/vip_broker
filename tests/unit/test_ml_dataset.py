@@ -884,6 +884,26 @@ def test_generation_rejects_entry_or_label_outside_segment(tmp_path: Path) -> No
         _validate_generation(directory)
 
 
+@pytest.mark.parametrize("split", ["train", "validation", "test"])
+def test_generation_rejects_label_at_development_split_end(tmp_path: Path, split: str) -> None:
+    directory = _minimal_valid_generation(tmp_path / "generation")
+    manifest = _read_manifest(directory)
+    split_end = manifest["splits"][split]["end"]
+    _rewrite_split_rows(directory, split, lambda row: row.update({"label_end_time": split_end}))
+    with pytest.raises(DatasetBuildError, match="label leaves"):
+        _validate_generation(directory)
+    assert not _generation_is_valid(directory)
+
+
+def test_generation_accepts_label_one_candle_before_development_split_end(tmp_path: Path) -> None:
+    directory = _minimal_valid_generation(tmp_path / "generation")
+    manifest = _read_manifest(directory)
+    split_end = datetime.fromisoformat(manifest["splits"]["train"]["end"].replace("Z", "+00:00"))
+    label_end = (split_end - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    _rewrite_split_rows(directory, "train", lambda row: row.update({"label_end_time": label_end}))
+    _validate_generation(directory)
+
+
 def test_minimal_generation_accepts_normalized_signal_and_next_open(tmp_path: Path) -> None:
     _validate_generation(_minimal_valid_generation(tmp_path / "generation"))
 
