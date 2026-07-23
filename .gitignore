@@ -12,6 +12,7 @@ data/archive_cache/
 data/validated/*
 data/features/*
 data/datasets/*
+data/processed/*
 !data/**/.gitkeep
 models/*.joblib
 models/*.pkl

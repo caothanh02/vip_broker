@@ -18,6 +18,10 @@ The public-only Binance Spot pipeline downloads closed `BTCUSDT` 1h candles, sto
 
 `make build-dataset` builds labels only at rule-based entry candidates. The triple barrier is entry at next open, 2×ATR stop, 4×ATR target and 48-candle limit. Timeouts are excluded from binary baseline training but must be reported. `make train`, `make evaluate`, and `make walk-forward` are chronological only: scaler/selection train-only and threshold validation-only. Model metadata records ordered features/schema/checksum.
 
+For the verified, interruption-segmented, sealed-holdout dataset contract and the exact immutable
+split/label policy, see [docs/ml.md](docs/ml.md). The build command creates data only: it does not
+train, tune, evaluate, backtest, or enable live trading.
+
 ## Dry-run and operations
 
 `make dry-run` uses a paper broker and cannot submit an exchange order. Configure public data and SQLite through `.env.example`; do not create a secret-bearing `.env` in source control. Optional FastAPI health endpoints are `/health/live`, `/health/ready`, `/metrics` after installing the `api` extra. See `docs/` for architecture, strategy, risk, ML, backtesting, deployment and operations.

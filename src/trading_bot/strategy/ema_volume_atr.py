@@ -1,10 +1,47 @@
 from __future__ import annotations
 
+from typing import Protocol
+
 import pandas as pd
 
 from trading_bot.domain.models import Side, StrategySignal
 from trading_bot.features.pipeline import FEATURE_SCHEMA_VERSION
 from trading_bot.settings import BotSettings
+
+
+class CandidateRuleSettings(Protocol):
+    """The immutable subset of configuration that changes entry candidates."""
+
+    @property
+    def volume_multiplier(self) -> float: ...
+
+
+def is_long_entry_candidate(
+    current: pd.Series, previous: pd.Series, settings: CandidateRuleSettings
+) -> bool:
+    """Pure rule predicate shared by execution and candidate-only ML data."""
+    needed = ["ema20", "ema50", "ema200", "volume_sma20", "atr14"]
+    if not bool(current.get("is_closed", False)) or current[needed].isna().any():
+        return False
+    crossed = current.ema20 > current.ema50 and previous.ema20 <= previous.ema50
+    volume_ok = current.volume > settings.volume_multiplier * current.volume_sma20
+    return bool(crossed and current.close > current.ema200 and volume_ok and current.atr14 > 0)
+
+
+def long_entry_candidate_mask(frame: pd.DataFrame, settings: CandidateRuleSettings) -> pd.Series:
+    """Vectorized execution-equivalent candidate predicate for research data."""
+    needed = ["ema20", "ema50", "ema200", "volume_sma20", "atr14"]
+    complete = frame[needed].notna().all(axis=1)
+    crossed = (frame.ema20 > frame.ema50) & (frame.ema20.shift(1) <= frame.ema50.shift(1))
+    volume_ok = frame.volume > settings.volume_multiplier * frame.volume_sma20
+    return (
+        frame.is_closed.astype(bool)
+        & complete
+        & crossed
+        & (frame.close > frame.ema200)
+        & volume_ok
+        & (frame.atr14 > 0)
+    ).fillna(False)
 
 
 class EmaVolumeAtrStrategy:
@@ -19,12 +56,7 @@ class EmaVolumeAtrStrategy:
         if len(frame) < 2 or has_position or cooldown or circuit_open:
             return None
         current, previous = frame.iloc[-1], frame.iloc[-2]
-        needed = ["ema20", "ema50", "ema200", "volume_sma20", "atr14"]
-        if not bool(current.get("is_closed", False)) or current[needed].isna().any():
-            return None
-        crossed = current.ema20 > current.ema50 and previous.ema20 <= previous.ema50
-        volume_ok = current.volume > self.settings.volume_multiplier * current.volume_sma20
-        if crossed and current.close > current.ema200 and volume_ok and current.atr14 > 0:
+        if is_long_entry_candidate(current, previous, self.settings):
             return StrategySignal(
                 frame.index[-1].to_pydatetime(),
                 Side.BUY,
