@@ -32,6 +32,7 @@ from trading_bot.data.historical import (
 )
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle, Trade
+from trading_bot.ml.baseline import BaselineTrainingError, train_logistic_baseline
 from trading_bot.ml.dataset import DatasetBuildError, build_ml_dataset
 from trading_bot.settings import BotSettings, load_settings
 
@@ -172,7 +173,10 @@ def build_parser() -> argparse.ArgumentParser:
     dataset = subcommands.add_parser("build-dataset")
     dataset.add_argument("--input", type=Path, required=True)
     dataset.add_argument("--output-dir", type=Path, required=True)
-    for name in ("train", "evaluate", "walk-forward", "dry-run", "report"):
+    train = subcommands.add_parser("train")
+    train.add_argument("--dataset-dir", type=Path, required=True)
+    train.add_argument("--output-dir", type=Path, required=True)
+    for name in ("evaluate", "walk-forward", "dry-run", "report"):
         subcommands.add_parser(name)
     return parser
 
@@ -305,6 +309,26 @@ def _build_dataset(args: argparse.Namespace) -> None:
     )
 
 
+def _train(args: argparse.Namespace) -> None:
+    summary = train_logistic_baseline(args.dataset_dir, args.output_dir)
+    print(
+        json.dumps(
+            {
+                "dataset_generation_id": summary.dataset_generation_id,
+                "source_generation_id": summary.source_generation_id,
+                "threshold": summary.threshold,
+                "validation_metrics": summary.validation_metrics,
+                "test_metrics": summary.test_metrics,
+                "output_dir": str(summary.output_dir),
+                "experimental_only": True,
+                "production_eligible": False,
+                "live_trading_enabled": False,
+            },
+            indent=2,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -318,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
             _backtest(args, settings)
         elif args.command == "build-dataset":
             _build_dataset(args)
+        elif args.command == "train":
+            _train(args)
         elif args.command == "dry-run":
             print(
                 "Dry-run safety check complete: paper broker only; no exchange orders can be sent."
@@ -331,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         CsvDataError,
         DataCoverageError,
         DatasetBuildError,
+        BaselineTrainingError,
         ValueError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)

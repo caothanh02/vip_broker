@@ -32,3 +32,16 @@ the commit marker. Generated data is ignored by Git and must not be committed.
 ```text
 make build-dataset DATA_FILE=data/raw/btcusdt_1h.csv ML_DATASET_DIR=data/datasets/btcusdt_1h_v1
 ```
+
+## Experimental Logistic Regression baseline
+
+`trading-bot train --dataset-dir <dir> --output-dir <dir>` fits `StandardScaler` and a fixed
+`LogisticRegression(random_state=42)` on `train.csv` only. It selects one versioned probability
+threshold only from validation cumulative net return (at least five selected validation trades),
+then evaluates test once. `final_holdout.csv` is intentionally never opened by this command.
+
+The local-only artifact includes the fitted model, ordered feature schema, input checksums,
+dataset/source generation IDs, fixed model configuration, threshold selection, validation/test
+metrics, code and dependency provenance. Every artifact is marked experimental, not production
+eligible, and live trading remains disabled. It is not connected to strategy, backtest, broker, or
+live trading.
