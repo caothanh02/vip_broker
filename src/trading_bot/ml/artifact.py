@@ -117,6 +117,10 @@ def load_sealed_baseline_artifact(
     selection = _json(snapshots["threshold.selection.json"])
     _json(snapshots["validation.metrics.json"])
     _json(snapshots["test.metrics.json"])
+    threshold_policy = metadata.get("threshold_policy")
+    training_configuration = metadata.get("training_configuration")
+    if not isinstance(threshold_policy, dict) or not isinstance(training_configuration, dict):
+        raise ModelArtifactError("model artifact contract is invalid")
     threshold = selection.get("threshold")
     if (
         not isinstance(threshold, (int, float))
@@ -145,8 +149,8 @@ def load_sealed_baseline_artifact(
         or metadata.get("ordered_feature_schema") != FEATURE_COLUMNS
         or metadata.get("dataset_generation_id") != dataset_generation_id
         or metadata.get("source_generation_id") != source_generation_id
-        or metadata.get("threshold_policy", {}).get("version") != THRESHOLD_POLICY_VERSION
-        or metadata.get("training_configuration") != manifest.get("training_configuration")
+        or threshold_policy.get("version") != THRESHOLD_POLICY_VERSION
+        or training_configuration != manifest.get("training_configuration")
     ):
         raise ModelArtifactError("model artifact contract is invalid")
     try:

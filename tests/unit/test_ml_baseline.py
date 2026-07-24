@@ -344,6 +344,27 @@ def test_artifact_pickle_contract_tampering_is_rejected(tmp_path: Path, mutation
         )
 
 
+@pytest.mark.parametrize("bad_policy", [None, [], "policy", {"version": "wrong"}])
+def test_artifact_rejects_malformed_threshold_policy(tmp_path: Path, bad_policy: object) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    output = tmp_path / "model"
+    summary = train_logistic_baseline(dataset, output)
+    metadata_path = output / "model.metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["threshold_policy"] = bad_policy
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    manifest_path = output / "artifact.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["model.metadata.json"] = _sha256(metadata_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ModelArtifactError):
+        load_sealed_baseline_artifact(
+            output,
+            dataset_generation_id=summary.dataset_generation_id,
+            source_generation_id=summary.source_generation_id,
+        )
+
+
 def test_valid_test_labels_do_not_change_model_threshold_or_validation_metrics(
     tmp_path: Path,
 ) -> None:

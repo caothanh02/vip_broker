@@ -249,7 +249,7 @@ def _remove_staging_directory(
             last_error = exc
             if exc.errno not in {errno.EACCES, errno.EPERM, errno.EBUSY} and getattr(
                 exc, "winerror", None
-            ) not in {5, 32}:
+            ) not in {5, 32, 145}:
                 raise
             if attempt + 1 < attempts:
                 sleeper(0.01 * (attempt + 1))

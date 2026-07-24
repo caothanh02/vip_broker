@@ -25,6 +25,7 @@ from trading_bot.data.csv_store import (
     CsvDataError,
     csv_sha256,
     merge_candles,
+    metadata_path,
     read_candles,
     verify_metadata_checksum,
 )
@@ -359,7 +360,8 @@ def test_vision_generation_rolls_back_if_commit_marker_replace_fails(
     asyncio.run(
         download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
     )
-    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    official = (output, output.with_suffix(".anomalies.json"), metadata_path(output))
+    before = {path.name: path.read_bytes() for path in official}
     original_replace = historical._replace_generation_file
 
     def fail_metadata(source: Path, target: Path) -> None:
@@ -372,7 +374,72 @@ def test_vision_generation_rolls_back_if_commit_marker_replace_fails(
         asyncio.run(
             download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
         )
-    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+    assert {path.name: path.read_bytes() for path in official} == before
+    assert not list(tmp_path.glob(".btc.csv.generation.*"))
+    assert verify_metadata_checksum(output) is True
+
+
+def test_vision_cleanup_rejects_nonpositive_attempts(tmp_path: Path) -> None:
+    import trading_bot.data.historical as historical
+
+    with pytest.raises(ValueError, match="attempts"):
+        historical._remove_staging_directory(tmp_path / "staging", attempts=0)
+
+
+def test_vision_cleanup_retries_windows_directory_not_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trading_bot.data.historical as historical
+
+    calls = 0
+
+    def rmtree(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            error = OSError("directory not empty")
+            error.winerror = 145
+            raise error
+
+    monkeypatch.setattr(historical.shutil, "rmtree", rmtree)
+    historical._remove_staging_directory(tmp_path / "staging", attempts=4, sleeper=lambda _: None)
+    assert calls == 3
+
+
+def test_vision_cleanup_propagates_persistent_windows_directory_not_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trading_bot.data.historical as historical
+
+    calls = 0
+
+    def rmtree(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        error = OSError("directory not empty")
+        error.winerror = 145
+        raise error
+
+    monkeypatch.setattr(historical.shutil, "rmtree", rmtree)
+    with pytest.raises(OSError, match="could not remove Vision staging"):
+        historical._remove_staging_directory(
+            tmp_path / "staging", attempts=3, sleeper=lambda _: None
+        )
+    assert calls == 3
+
+
+def test_successful_vision_publish_leaves_no_generation_directory(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    asyncio.run(
+        download_vision_historical_csv(
+            _FakeVisionClient([_candle(0), _candle(1)]),
+            BASE,
+            BASE + timedelta(hours=2),
+            output,
+            True,
+        )
+    )
+    assert not list(tmp_path.glob(".btc.csv.generation.*"))
     assert verify_metadata_checksum(output) is True
 
 
