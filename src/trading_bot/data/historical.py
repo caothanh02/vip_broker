@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -193,24 +195,46 @@ def _publish_vision_generation(
         for target, backup in zip(targets, backups, strict=True):
             if target.exists():
                 shutil.copy2(target, backup)
+        replaced: list[tuple[Path, Path]] = []
         try:
             # Metadata is the commit marker.  Before it is replaced, a reader
             # rejects staged payloads by checksum.  A failed replacement is
             # rolled back to the prior complete generation before returning.
             for source, target in zip(staged, targets, strict=True):
                 _replace_generation_file(source, target)
+                replaced.append((target, backups[targets.index(target)]))
         except OSError:
-            for target, backup in zip(targets, backups, strict=True):
+            for target, backup in reversed(replaced):
                 if backup.exists():
                     _replace_generation_file(backup, target)
                 elif target.exists():
                     target.unlink()
             raise
     finally:
-        # Windows security scanners may retain a staging .tmp briefly after an
-        # atomic replace.  It is never a committed generation; cleanup must not
-        # turn a successfully published generation into a failed download.
-        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            _remove_staging_directory(staging)
+        except OSError:
+            if sys.exception() is not None:
+                # The publication/rollback failure is the primary diagnostic.
+                pass
+            else:
+                raise
+
+
+def _remove_staging_directory(staging: Path, attempts: int = 4) -> None:
+    """Remove a temporary generation, retrying bounded Windows sharing violations."""
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(staging)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.01 * (attempt + 1))
+    raise OSError(f"could not remove Vision staging directory: {staging}") from last_error
 
 
 def _rest_suffix_metadata(value: object) -> dict[str, str] | None:
