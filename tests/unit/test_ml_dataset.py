@@ -47,6 +47,7 @@ from trading_bot.ml.dataset import (
     _validate_generation,
     _write_csv,
     build_ml_dataset,
+    validate_development_dataset_generation,
 )
 from trading_bot.strategy.ema_volume_atr import (
     is_long_entry_candidate,
@@ -959,3 +960,29 @@ def test_generation_recovery_keeps_valid_destination_and_fails_closed_when_both_
     (backup / "dataset.manifest.json").write_text("{", encoding="utf-8")
     with pytest.raises(DatasetBuildError, match="no valid"):
         _recover_generation(destination)
+
+
+def test_development_validator_never_accesses_final_holdout_but_full_validator_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = _minimal_valid_generation(tmp_path / "generation")
+    final_holdout = directory / "final_holdout.csv"
+    final_holdout.write_text("sealed sentinel", encoding="utf-8")
+    original_open, original_stat = Path.open, Path.stat
+
+    def forbid_open(path: Path, *args: object, **kwargs: object) -> object:
+        if path == final_holdout:
+            raise AssertionError("development validator opened final holdout")
+        return original_open(path, *args, **kwargs)
+
+    def forbid_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == final_holdout:
+            raise AssertionError("development validator stat final holdout")
+        return original_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "open", forbid_open)
+        scoped.setattr(Path, "stat", forbid_stat)
+        assert validate_development_dataset_generation(directory)["dataset_generation_id"]
+    with pytest.raises(DatasetBuildError):
+        _validate_generation(directory)

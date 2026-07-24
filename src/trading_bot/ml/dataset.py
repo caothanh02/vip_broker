@@ -11,6 +11,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -20,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import numpy as np
 import pandas as pd
@@ -769,7 +770,18 @@ def _validate_generation(directory: Path) -> None:
         raise DatasetBuildError("dataset generation is corrupt or incomplete") from exc
 
 
-def _validate_generation_contents(directory: Path) -> None:
+def _freeze_manifest_value(value: Any) -> Any:
+    """Return an immutable snapshot so downstream consumers cannot alter validation input."""
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_manifest_value(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_manifest_value(item) for item in value)
+    return value
+
+
+def _validate_generation_contents(
+    directory: Path, *, development_only: bool = False
+) -> Mapping[str, Any]:
     manifest_path = directory / "dataset.manifest.json"
     try:
         manifest = json.loads(
@@ -811,6 +823,68 @@ def _validate_generation_contents(directory: Path) -> None:
         raise DatasetBuildError("dataset generation checksum or count metadata is invalid")
     splits = _manifest_splits(manifest)
     segments = _manifest_segment_bounds(manifest, splits)
+    if development_only:
+        expected_files = {f"{split}.csv" for split in CANONICAL_SPLIT_NAMES}
+        candidates = manifest.get("candidate_counts")
+        coverage = manifest.get("split_signal_coverage")
+        exclusions = manifest.get("excluded_row_counts")
+        if (
+            set(checksums) != expected_files
+            or not all(
+                isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                for value in checksums.values()
+            )
+            or set(row_counts) != set(CANONICAL_SPLIT_NAMES)
+            or not isinstance(candidates, dict)
+            or set(candidates) != set(CANONICAL_SPLIT_NAMES)
+            or not isinstance(coverage, dict)
+            or set(coverage) != set(CANONICAL_SPLIT_NAMES)
+            or type(row_counts[FINAL_HOLDOUT]) is not int
+            or row_counts[FINAL_HOLDOUT] < 0
+            or type(candidates[FINAL_HOLDOUT]) is not int
+            or candidates[FINAL_HOLDOUT] < 0
+            or candidates[FINAL_HOLDOUT] < row_counts[FINAL_HOLDOUT]
+            or not isinstance(exclusions, dict)
+        ):
+            raise DatasetBuildError("development final-holdout metadata is invalid")
+        missing_next_open = exclusions.get("missing_next_open", 0)
+        if (
+            type(missing_next_open) is not int
+            or missing_next_open < 0
+            or candidates[FINAL_HOLDOUT] - row_counts[FINAL_HOLDOUT] > missing_next_open
+        ):
+            raise DatasetBuildError("development final-holdout metadata is invalid")
+        final_coverage = coverage[FINAL_HOLDOUT]
+        if not isinstance(final_coverage, dict) or set(final_coverage) != {
+            "first_signal_time",
+            "last_signal_time",
+        }:
+            raise DatasetBuildError("development final-holdout coverage is invalid")
+        first, last = (
+            final_coverage.get("first_signal_time"),
+            final_coverage.get("last_signal_time"),
+        )
+        if row_counts[FINAL_HOLDOUT] == 0:
+            if first is not None or last is not None:
+                raise DatasetBuildError("empty final-holdout coverage is invalid")
+        else:
+            final_start, final_end = splits[FINAL_HOLDOUT]
+            first_time = _parse_hour_time(first, "final holdout first signal")
+            last_time = _parse_hour_time(last, "final holdout last signal")
+            first_in_final_segment = any(
+                split == FINAL_HOLDOUT and start <= first_time < end
+                for split, start, end in segments.values()
+            )
+            last_in_final_segment = any(
+                split == FINAL_HOLDOUT and start <= last_time < end
+                for split, start, end in segments.values()
+            )
+            if not (
+                final_start <= first_time <= last_time < final_end
+                and first_in_final_segment
+                and last_in_final_segment
+            ):
+                raise DatasetBuildError("development final-holdout coverage is invalid")
     try:
         candidate_policy = CandidatePolicy(**manifest["candidate_policy"])
         label_values = dict(manifest["label_policy"])
@@ -847,7 +921,8 @@ def _validate_generation_contents(directory: Path) -> None:
     ):
         raise DatasetBuildError("dataset generation identity does not match its policy")
     file_stats: dict[str, DatasetFileStats] = {}
-    for split in CANONICAL_SPLIT_NAMES:
+    validated_splits = SPLITS if development_only else CANONICAL_SPLIT_NAMES
+    for split in validated_splits:
         filename = f"{split}.csv"
         checksum = checksums.get(filename)
         if not isinstance(checksum, str) or checksum != _file_sha256(directory / filename):
@@ -900,6 +975,17 @@ def _validate_generation_contents(directory: Path) -> None:
             positive > 0 and negative > 0
         ):
             raise DatasetBuildError("dataset generation trainable status is invalid")
+    return cast(Mapping[str, Any], _freeze_manifest_value(manifest))
+
+
+def validate_development_dataset_generation(directory: Path) -> Mapping[str, Any]:
+    """Validate only train/validation/test without any final-holdout filesystem access."""
+    try:
+        return _validate_generation_contents(directory, development_only=True)
+    except DatasetBuildError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, InvalidOperation, csv.Error) as exc:
+        raise DatasetBuildError("development dataset generation is corrupt or incomplete") from exc
 
 
 def _generation_is_valid(directory: Path) -> bool:

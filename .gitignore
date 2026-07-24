@@ -14,9 +14,7 @@ data/features/*
 data/datasets/*
 data/processed/*
 !data/**/.gitkeep
-models/*.joblib
-models/*.pkl
-models/*.json
+models/*
 !models/README.md
 reports/backtests/*
 reports/ml/*

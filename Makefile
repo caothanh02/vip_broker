@@ -3,6 +3,7 @@ DATA_START ?= 2024-01-01
 DATA_END ?= 2024-02-01
 DATA_FILE ?= data/raw/btcusdt_1h.csv
 ML_DATASET_DIR ?= data/datasets/btcusdt_1h_v1
+ML_MODEL_DIR ?= models/btcusdt_1h_logistic_v1
 REPORT_FILE ?= reports/backtests/btcusdt_1h_baseline.json
 install:
 	uv sync --extra dev
@@ -25,7 +26,7 @@ backtest-real:
 build-dataset:
 	uv run trading-bot build-dataset --input $(DATA_FILE) --output-dir $(ML_DATASET_DIR)
 train:
-	uv run trading-bot train
+	uv run trading-bot train --dataset-dir $(ML_DATASET_DIR) --output-dir $(ML_MODEL_DIR)
 evaluate:
 	uv run trading-bot evaluate
 walk-forward:
