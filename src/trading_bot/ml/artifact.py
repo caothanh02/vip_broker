@@ -44,15 +44,11 @@ class SealedBaselineArtifact:
     source_generation_id: str
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def _sha256(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
 
 
-def _json(path: Path) -> dict[str, Any]:
+def _json(payload: bytes) -> dict[str, Any]:
     def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in pairs:
@@ -62,25 +58,40 @@ def _json(path: Path) -> dict[str, Any]:
         return result
 
     try:
-        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
-    except (OSError, json.JSONDecodeError) as exc:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ModelArtifactError("model artifact JSON is invalid") from exc
     if not isinstance(value, dict):
         raise ModelArtifactError("model artifact JSON is invalid")
     return value
 
 
+def _read_regular(path: Path) -> bytes:
+    try:
+        if not path.is_file() or path.is_symlink():
+            raise ModelArtifactError("model artifact must be a regular file")
+        return path.read_bytes()
+    except ModelArtifactError:
+        raise
+    except OSError as exc:
+        raise ModelArtifactError("model artifact is unreadable") from exc
+
+
 def load_sealed_baseline_artifact(
     directory: Path, *, dataset_generation_id: str, source_generation_id: str
 ) -> SealedBaselineArtifact:
     """Verify every byte and contract field before deserializing model.pkl."""
-    manifest_path = directory / ARTIFACT_MANIFEST_FILENAME
-    manifest = _json(manifest_path)
-    if set(path.name for path in directory.iterdir()) != {
+    try:
+        entries = {path.name: path for path in directory.iterdir()}
+    except OSError as exc:
+        raise ModelArtifactError("model artifact directory is unreadable") from exc
+    if set(entries) != {
         *_ARTIFACT_FILES,
         ARTIFACT_MANIFEST_FILENAME,
     }:
         raise ModelArtifactError("model artifact files are incomplete or unexpected")
+    snapshots = {name: _read_regular(path) for name, path in entries.items()}
+    manifest = _json(snapshots[ARTIFACT_MANIFEST_FILENAME])
     files = manifest.get("files")
     if (
         manifest.get("artifact_schema_version") != "1.0.0"
@@ -98,12 +109,14 @@ def load_sealed_baseline_artifact(
     ):
         raise ModelArtifactError("model artifact manifest is invalid")
     if any(
-        not isinstance(value, str) or _sha256(directory / name) != value
+        not isinstance(value, str) or _sha256(snapshots[name]) != value
         for name, value in files.items()
     ):
         raise ModelArtifactError("model artifact checksum mismatch")
-    metadata = _json(directory / "model.metadata.json")
-    selection = _json(directory / "threshold.selection.json")
+    metadata = _json(snapshots["model.metadata.json"])
+    selection = _json(snapshots["threshold.selection.json"])
+    _json(snapshots["validation.metrics.json"])
+    _json(snapshots["test.metrics.json"])
     threshold = selection.get("threshold")
     if (
         not isinstance(threshold, (int, float))
@@ -120,9 +133,15 @@ def load_sealed_baseline_artifact(
     ):
         raise ModelArtifactError("model artifact contract is invalid")
     try:
-        with (directory / "model.pkl").open("rb") as handle:
-            payload = pickle.load(handle)
-    except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ImportError) as exc:
+        payload = pickle.loads(snapshots["model.pkl"])
+    except (
+        pickle.UnpicklingError,
+        EOFError,
+        AttributeError,
+        ImportError,
+        IndexError,
+        KeyError,
+    ) as exc:
         raise ModelArtifactError("model artifact pickle is invalid") from exc
     if not isinstance(payload, Mapping):
         raise ModelArtifactError("model artifact pickle is invalid")

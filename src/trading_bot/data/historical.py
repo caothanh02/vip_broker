@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import shutil
-import sys
 import tempfile
 import time
 import uuid
@@ -108,6 +108,7 @@ def _publish_vision_generation(
     anomaly_path = output.with_suffix(".anomalies.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.generation.", dir=output.parent))
+    primary_error: BaseException | None = None
     try:
         staged_csv = staging / output.name
         staged_anomaly = staging / anomaly_path.name
@@ -191,8 +192,11 @@ def _publish_vision_generation(
         _verify_staged_generation(staged_csv, staged_anomaly, staged_metadata)
         targets = (output, anomaly_path, metadata_path(output))
         staged = (staged_csv, staged_anomaly, staged_metadata)
-        backups = tuple(staging / f"{target.name}.previous" for target in targets)
-        for target, backup in zip(targets, backups, strict=True):
+        records = [
+            (source, target, staging / f"{target.name}.previous")
+            for source, target in zip(staged, targets, strict=True)
+        ]
+        for _, target, backup in records:
             if target.exists():
                 shutil.copy2(target, backup)
         replaced: list[tuple[Path, Path]] = []
@@ -200,29 +204,40 @@ def _publish_vision_generation(
             # Metadata is the commit marker.  Before it is replaced, a reader
             # rejects staged payloads by checksum.  A failed replacement is
             # rolled back to the prior complete generation before returning.
-            for source, target in zip(staged, targets, strict=True):
+            for source, target, backup in records:
                 _replace_generation_file(source, target)
-                replaced.append((target, backups[targets.index(target)]))
-        except OSError:
+                replaced.append((target, backup))
+        except OSError as exc:
+            rollback_errors: list[OSError] = []
             for target, backup in reversed(replaced):
-                if backup.exists():
-                    _replace_generation_file(backup, target)
-                elif target.exists():
-                    target.unlink()
+                try:
+                    if backup.exists():
+                        _replace_generation_file(backup, target)
+                    elif target.exists():
+                        target.unlink()
+                except OSError as rollback_error:
+                    rollback_errors.append(rollback_error)
+            if rollback_errors:
+                exc.add_note(f"rollback failures: {rollback_errors!r}")
             raise
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
         try:
             _remove_staging_directory(staging)
-        except OSError:
-            if sys.exception() is not None:
-                # The publication/rollback failure is the primary diagnostic.
-                pass
-            else:
+        except OSError as cleanup_error:
+            if primary_error is None:
                 raise
+            primary_error.add_note(f"staging cleanup failure: {cleanup_error!r}")
 
 
-def _remove_staging_directory(staging: Path, attempts: int = 4) -> None:
+def _remove_staging_directory(
+    staging: Path, attempts: int = 4, sleeper: Callable[[float], None] = time.sleep
+) -> None:
     """Remove a temporary generation, retrying bounded Windows sharing violations."""
+    if attempts <= 0:
+        raise ValueError("staging cleanup attempts must be positive")
     last_error: OSError | None = None
     for attempt in range(attempts):
         try:
@@ -232,8 +247,12 @@ def _remove_staging_directory(staging: Path, attempts: int = 4) -> None:
             return
         except OSError as exc:
             last_error = exc
+            if exc.errno not in {errno.EACCES, errno.EPERM, errno.EBUSY} and getattr(
+                exc, "winerror", None
+            ) not in {5, 32}:
+                raise
             if attempt + 1 < attempts:
-                time.sleep(0.01 * (attempt + 1))
+                sleeper(0.01 * (attempt + 1))
     raise OSError(f"could not remove Vision staging directory: {staging}") from last_error
 
 
