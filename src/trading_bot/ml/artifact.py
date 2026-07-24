@@ -29,6 +29,21 @@ _ARTIFACT_FILES: Final = {
     "test.metrics.json",
     "threshold.selection.json",
 }
+_THRESHOLD_POLICY: Final = {
+    "version": THRESHOLD_POLICY_VERSION,
+    "minimum_validation_trades": 5,
+    "objective": "cumulative_net_return_after_costs",
+    "tie_breaks": ["mean_net_return", "precision", "trade_count", "higher_threshold"],
+}
+_TRAINING_CONFIGURATION: Final = {
+    "random_state": 42,
+    "regularization_c": 1.0,
+    "solver": "lbfgs",
+    "max_iter": 1000,
+    "fit_split": "train",
+    "threshold_selection_split": "validation",
+    "test_evaluation_split": "test",
+}
 
 
 class ModelArtifactError(ValueError):
@@ -119,7 +134,14 @@ def load_sealed_baseline_artifact(
     _json(snapshots["test.metrics.json"])
     threshold_policy = metadata.get("threshold_policy")
     training_configuration = metadata.get("training_configuration")
-    if not isinstance(threshold_policy, dict) or not isinstance(training_configuration, dict):
+    if (
+        not isinstance(threshold_policy, dict)
+        or not isinstance(training_configuration, dict)
+        or threshold_policy != _THRESHOLD_POLICY
+        or manifest.get("threshold_policy") != _THRESHOLD_POLICY
+        or training_configuration != _TRAINING_CONFIGURATION
+        or manifest.get("training_configuration") != _TRAINING_CONFIGURATION
+    ):
         raise ModelArtifactError("model artifact contract is invalid")
     threshold = selection.get("threshold")
     if (

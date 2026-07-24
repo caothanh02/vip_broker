@@ -354,6 +354,7 @@ def train_logistic_baseline(dataset_dir: Path, output_dir: Path) -> BaselineTrai
                 "feature_schema_version": FEATURE_SCHEMA_VERSION,
                 "threshold_policy_version": THRESHOLD_POLICY_VERSION,
                 "threshold": selection.threshold,
+                "threshold_policy": metadata["threshold_policy"],
                 "model_type": "StandardScaler + LogisticRegression",
                 "training_configuration": metadata["training_configuration"],
                 "experimental_only": True,

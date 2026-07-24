@@ -262,9 +262,9 @@ def test_artifact_loader_fails_closed_before_unpickle(
         (output / "artifact.manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     def reject_unpickle(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("pickle must not be loaded")
+        raise AssertionError("pickle.loads must not be called")
 
-    monkeypatch.setattr(pickle, "load", reject_unpickle)
+    monkeypatch.setattr(pickle, "loads", reject_unpickle)
     with pytest.raises(ModelArtifactError):
         load_sealed_baseline_artifact(
             output,
