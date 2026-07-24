@@ -346,10 +346,12 @@ def train_logistic_baseline(dataset_dir: Path, output_dir: Path) -> BaselineTrai
             {
                 "artifact_schema_version": "1.0.0",
                 "model_artifact_version": BASELINE_MODEL_VERSION,
+                "model_version": BASELINE_MODEL_VERSION,
                 "files": {name: _sha256(staging / name) for name in artifact_files},
                 "dataset_generation_id": manifest["dataset_generation_id"],
                 "source_generation_id": manifest["source_generation_id"],
                 "ordered_feature_schema": FEATURE_COLUMNS,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
                 "threshold_policy_version": THRESHOLD_POLICY_VERSION,
                 "threshold": selection.threshold,
                 "model_type": "StandardScaler + LogisticRegression",

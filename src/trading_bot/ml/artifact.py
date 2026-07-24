@@ -127,9 +127,26 @@ def load_sealed_baseline_artifact(
     if (
         manifest.get("threshold") != threshold
         or not 0 <= float(threshold) <= 1
+        or any(
+            metadata.get(key) != manifest.get(key)
+            for key in (
+                "model_version",
+                "model_type",
+                "dataset_generation_id",
+                "source_generation_id",
+                "ordered_feature_schema",
+                "feature_schema_version",
+                "experimental_only",
+                "production_eligible",
+                "live_trading_enabled",
+            )
+        )
+        or metadata.get("model_version") != BASELINE_MODEL_VERSION
         or metadata.get("ordered_feature_schema") != FEATURE_COLUMNS
         or metadata.get("dataset_generation_id") != dataset_generation_id
         or metadata.get("source_generation_id") != source_generation_id
+        or metadata.get("threshold_policy", {}).get("version") != THRESHOLD_POLICY_VERSION
+        or metadata.get("training_configuration") != manifest.get("training_configuration")
     ):
         raise ModelArtifactError("model artifact contract is invalid")
     try:
@@ -143,19 +160,23 @@ def load_sealed_baseline_artifact(
         KeyError,
     ) as exc:
         raise ModelArtifactError("model artifact pickle is invalid") from exc
-    if not isinstance(payload, Mapping):
+    if not isinstance(payload, Mapping) or set(payload) != {"scaler", "model"}:
         raise ModelArtifactError("model artifact pickle is invalid")
     scaler, model = payload.get("scaler"), payload.get("model")
     if not isinstance(scaler, StandardScaler) or not isinstance(model, LogisticRegression):
         raise ModelArtifactError("model artifact type is invalid")
     feature_count = len(FEATURE_COLUMNS)
     if (
-        getattr(scaler, "n_features_in_", None) != feature_count
+        scaler.with_mean is not True
+        or scaler.with_std is not True
+        or getattr(scaler, "n_features_in_", None) != feature_count
         or getattr(model, "n_features_in_", None) != feature_count
         or not isinstance(getattr(model, "coef_", None), np.ndarray)
-        or model.coef_.shape[1] != feature_count
+        or model.coef_.shape != (1, feature_count)
         or not isinstance(getattr(model, "intercept_", None), np.ndarray)
+        or model.intercept_.shape != (1,)
         or not isinstance(getattr(model, "classes_", None), np.ndarray)
+        or model.classes_.shape != (2,)
         or model.classes_.tolist() != [0, 1]
         or not all(
             isinstance(getattr(scaler, name, None), np.ndarray)
@@ -165,6 +186,11 @@ def load_sealed_baseline_artifact(
         )
         or not np.isfinite(model.coef_).all()
         or not np.isfinite(model.intercept_).all()
+        or not np.all(scaler.scale_ > 0)
+        or model.C != 1.0
+        or model.solver != "lbfgs"
+        or model.max_iter != 1000
+        or model.random_state != 42
     ):
         raise ModelArtifactError("model artifact feature dimensions are invalid")
     return SealedBaselineArtifact(
