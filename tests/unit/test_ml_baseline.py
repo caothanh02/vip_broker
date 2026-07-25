@@ -16,6 +16,7 @@ import pytest
 from trading_bot.cli import main
 from trading_bot.features.pipeline import FEATURE_COLUMNS, FEATURE_SCHEMA_VERSION
 from trading_bot.ml import baseline
+from trading_bot.ml.artifact import ModelArtifactError, load_sealed_baseline_artifact
 from trading_bot.ml.baseline import BaselineTrainingError, train_logistic_baseline
 from trading_bot.ml.dataset import (
     CANDIDATE_POLICY_VERSION,
@@ -230,8 +231,158 @@ def test_training_never_opens_final_holdout_and_writes_provenance(
     assert metadata["production_eligible"] is False
     assert metadata["live_trading_enabled"] is False
     assert set(metadata["input_file_sha256"]) == {"train.csv", "validation.csv", "test.csv"}
+    artifact = load_sealed_baseline_artifact(
+        output,
+        dataset_generation_id=summary.dataset_generation_id,
+        source_generation_id=summary.source_generation_id,
+    )
+    assert artifact.threshold == summary.threshold
     with pytest.raises(DatasetBuildError):
         _validate_generation(dataset)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "checksum", "duplicate", "threshold"])
+def test_artifact_loader_fails_closed_before_unpickle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    output = tmp_path / "model"
+    summary = train_logistic_baseline(dataset, output)
+    if mutation == "missing":
+        (output / "model.pkl").unlink()
+    elif mutation == "extra":
+        (output / "extra").write_text("x", encoding="utf-8")
+    elif mutation == "checksum":
+        (output / "model.pkl").write_bytes(b"tampered")
+    elif mutation == "duplicate":
+        (output / "artifact.manifest.json").write_text('{"files":{},"files":{}}', encoding="utf-8")
+    else:
+        manifest = json.loads((output / "artifact.manifest.json").read_text(encoding="utf-8"))
+        manifest["threshold"] = float("nan")
+        (output / "artifact.manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def reject_unpickle(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("pickle.loads must not be called")
+
+    monkeypatch.setattr(pickle, "loads", reject_unpickle)
+    with pytest.raises(ModelArtifactError):
+        load_sealed_baseline_artifact(
+            output,
+            dataset_generation_id=summary.dataset_generation_id,
+            source_generation_id=summary.source_generation_id,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda manifest: manifest.update({"threshold": -0.1}),
+        lambda manifest: manifest.update({"threshold": 1.1}),
+        lambda manifest: manifest.update({"threshold": float("inf")}),
+        lambda manifest: manifest.update(
+            {"ordered_feature_schema": list(reversed(FEATURE_COLUMNS))}
+        ),
+        lambda manifest: manifest.update({"experimental_only": False}),
+        lambda manifest: manifest.update({"production_eligible": True}),
+        lambda manifest: manifest.update({"live_trading_enabled": True}),
+    ],
+    ids=[
+        "threshold-negative",
+        "threshold-high",
+        "threshold-infinite",
+        "feature-order",
+        "not-experimental",
+        "production",
+        "live",
+    ],
+)
+def test_artifact_manifest_contract_tampering_is_rejected(
+    tmp_path: Path, mutate: Callable[[dict[str, Any]], None]
+) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    output = tmp_path / "model"
+    summary = train_logistic_baseline(dataset, output)
+    path = output / "artifact.manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    mutate(manifest)
+    path.write_text(json.dumps(manifest, allow_nan=True), encoding="utf-8")
+    with pytest.raises(ModelArtifactError):
+        load_sealed_baseline_artifact(
+            output,
+            dataset_generation_id=summary.dataset_generation_id,
+            source_generation_id=summary.source_generation_id,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["dimension", "classes", "nonfinite", "type"])
+def test_artifact_pickle_contract_tampering_is_rejected(tmp_path: Path, mutation: str) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    output = tmp_path / "model"
+    summary = train_logistic_baseline(dataset, output)
+    model_path = output / "model.pkl"
+    with model_path.open("rb") as handle:
+        payload = pickle.load(handle)
+    if mutation == "dimension":
+        payload["scaler"].mean_ = payload["scaler"].mean_[:-1]
+    elif mutation == "classes":
+        payload["model"].classes_ = payload["model"].classes_[::-1]
+    elif mutation == "nonfinite":
+        payload["model"].coef_[0, 0] = float("nan")
+    else:
+        payload["model"] = object()
+    with model_path.open("wb") as handle:
+        pickle.dump(payload, handle)
+    manifest_path = output / "artifact.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["model.pkl"] = _sha256(model_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ModelArtifactError):
+        load_sealed_baseline_artifact(
+            output,
+            dataset_generation_id=summary.dataset_generation_id,
+            source_generation_id=summary.source_generation_id,
+        )
+
+
+@pytest.mark.parametrize("bad_policy", [None, [], "policy", {"version": "wrong"}])
+def test_artifact_rejects_malformed_threshold_policy(tmp_path: Path, bad_policy: object) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    output = tmp_path / "model"
+    summary = train_logistic_baseline(dataset, output)
+    metadata_path = output / "model.metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["threshold_policy"] = bad_policy
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    manifest_path = output / "artifact.manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["model.metadata.json"] = _sha256(metadata_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ModelArtifactError):
+        load_sealed_baseline_artifact(
+            output,
+            dataset_generation_id=summary.dataset_generation_id,
+            source_generation_id=summary.source_generation_id,
+        )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ValueError("bad"), TypeError("bad"), RecursionError("bad"), pickle.UnpicklingError("bad")],
+)
+def test_artifact_wraps_pickle_loads_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    output = tmp_path / "model"
+    summary = train_logistic_baseline(dataset, output)
+    monkeypatch.setattr(pickle, "loads", lambda _: (_ for _ in ()).throw(error))
+    with pytest.raises(ModelArtifactError) as raised:
+        load_sealed_baseline_artifact(
+            output,
+            dataset_generation_id=summary.dataset_generation_id,
+            source_generation_id=summary.source_generation_id,
+        )
+    assert raised.value.__cause__ is error
 
 
 def test_valid_test_labels_do_not_change_model_threshold_or_validation_metrics(

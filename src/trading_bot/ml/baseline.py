@@ -37,6 +37,7 @@ DEVELOPMENT_SPLITS: Final = ("train", "validation", "test")
 THRESHOLD_POLICY_VERSION: Final = "1.0.0"
 BASELINE_MODEL_VERSION: Final = "1.0.0"
 MIN_VALIDATION_TRADES: Final = 5
+ARTIFACT_MANIFEST_FILENAME: Final = "artifact.manifest.json"
 
 
 class BaselineTrainingError(ValueError):
@@ -331,6 +332,36 @@ def train_logistic_baseline(dataset_dir: Path, output_dir: Path) -> BaselineTrai
         _write_json(staging / "validation.metrics.json", validation_metrics)
         _write_json(staging / "test.metrics.json", test_metrics)
         _write_json(staging / "threshold.selection.json", asdict(selection))
+        # Written last: this is the sealed artifact commit marker consumed by
+        # offline backtests before they are permitted to unpickle the model.
+        artifact_files = (
+            "model.pkl",
+            "model.metadata.json",
+            "validation.metrics.json",
+            "test.metrics.json",
+            "threshold.selection.json",
+        )
+        _write_json(
+            staging / ARTIFACT_MANIFEST_FILENAME,
+            {
+                "artifact_schema_version": "1.0.0",
+                "model_artifact_version": BASELINE_MODEL_VERSION,
+                "model_version": BASELINE_MODEL_VERSION,
+                "files": {name: _sha256(staging / name) for name in artifact_files},
+                "dataset_generation_id": manifest["dataset_generation_id"],
+                "source_generation_id": manifest["source_generation_id"],
+                "ordered_feature_schema": FEATURE_COLUMNS,
+                "feature_schema_version": FEATURE_SCHEMA_VERSION,
+                "threshold_policy_version": THRESHOLD_POLICY_VERSION,
+                "threshold": selection.threshold,
+                "threshold_policy": metadata["threshold_policy"],
+                "model_type": "StandardScaler + LogisticRegression",
+                "training_configuration": metadata["training_configuration"],
+                "experimental_only": True,
+                "production_eligible": False,
+                "live_trading_enabled": False,
+            },
+        )
         os.replace(staging, output_dir)
     except Exception:
         if staging.exists():
