@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import shutil
-import tempfile
 import time
 import uuid
 from collections.abc import Callable
@@ -29,6 +28,12 @@ from trading_bot.data.time_ranges import validate_hour_aligned_range
 from trading_bot.domain.models import Candle
 
 _INTERVAL = timedelta(hours=1)
+_MANAGED_STAGING_DIRECTORY = ".vision-staging"
+_GENERATION_PREFIX = "generation-"
+_CLEANUP_READY_MARKER = ".cleanup-ready"
+_DEFAULT_CLEANUP_TIMEOUT_SECONDS = 3.5
+_INITIAL_CLEANUP_DELAY_SECONDS = 0.05
+_MAX_CLEANUP_DELAY_SECONDS = 1.0
 
 
 class ClosedCandleClient(Protocol):
@@ -55,6 +60,10 @@ class DownloadSummary:
 
 class DataCoverageError(RuntimeError):
     """The exchange response cannot prove complete coverage of the requested range."""
+
+
+class StagingCleanupError(OSError):
+    """A managed Vision generation could not be removed before its deadline."""
 
 
 async def download_vision_historical_csv(
@@ -107,7 +116,7 @@ def _publish_vision_generation(
     report["requested_range"] = {"start": _iso(requested_start), "end": _iso(effective_end)}
     anomaly_path = output.with_suffix(".anomalies.json")
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.generation.", dir=output.parent))
+    staging = _create_managed_staging(output, generation_id)
     primary_error: BaseException | None = None
     try:
         staged_csv = staging / output.name
@@ -224,22 +233,60 @@ def _publish_vision_generation(
         primary_error = exc
         raise
     finally:
+        marker_error: OSError | None = None
+        try:
+            _write_cleanup_ready_marker(staging)
+        except OSError as exc:
+            marker_error = exc
         try:
             _remove_staging_directory(staging)
         except OSError as cleanup_error:
-            if primary_error is None:
+            retained = staging.exists()
+            if retained:
+                try:
+                    marker = _restore_cleanup_ready_marker(staging)
+                except OSError as restoration_error:
+                    cleanup_error.add_note(
+                        "staging cleanup marker restoration failure: "
+                        f"staging_path={staging} marker_path={staging / _CLEANUP_READY_MARKER} "
+                        f"error={restoration_error!r}"
+                    )
+                else:
+                    cleanup_error.add_note(
+                        "staging cleanup marker restored: "
+                        f"staging_path={staging} marker_path={marker}"
+                    )
+            if marker_error is not None:
+                cleanup_error.add_note(f"cleanup marker failure: {marker_error!r}")
+            if primary_error is None and retained:
                 raise
-            primary_error.add_note(f"staging cleanup failure: {cleanup_error!r}")
+            if primary_error is not None and retained:
+                primary_error.add_note(f"staging cleanup failure: {cleanup_error!r}")
+                for note in getattr(cleanup_error, "__notes__", ()):
+                    primary_error.add_note(note)
+                if marker_error is not None:
+                    primary_error.add_note(f"cleanup marker failure: {marker_error!r}")
 
 
 def _remove_staging_directory(
-    staging: Path, attempts: int = 4, sleeper: Callable[[float], None] = time.sleep
+    staging: Path,
+    attempts: int | None = None,
+    *,
+    timeout_seconds: float = _DEFAULT_CLEANUP_TIMEOUT_SECONDS,
+    sleeper: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> None:
-    """Remove a temporary generation, retrying bounded Windows sharing violations."""
-    if attempts <= 0:
+    """Remove a managed generation with bounded Windows-safe backoff."""
+    if attempts is not None and attempts <= 0:
         raise ValueError("staging cleanup attempts must be positive")
+    if timeout_seconds <= 0:
+        raise ValueError("staging cleanup timeout must be positive")
+    started_at = monotonic()
+    delay = _INITIAL_CLEANUP_DELAY_SECONDS
+    attempt = 0
     last_error: OSError | None = None
-    for attempt in range(attempts):
+    while True:
+        attempt += 1
         try:
             shutil.rmtree(staging)
             return
@@ -247,13 +294,113 @@ def _remove_staging_directory(
             return
         except OSError as exc:
             last_error = exc
-            if exc.errno not in {errno.EACCES, errno.EPERM, errno.EBUSY} and getattr(
-                exc, "winerror", None
-            ) not in {5, 32, 145}:
+            if (
+                exc.errno not in {errno.EACCES, errno.EPERM, errno.EBUSY}
+                and getattr(exc, "winerror", None) not in {5, 32, 145}
+                and exc.errno != errno.ENOTEMPTY
+            ):
                 raise
-            if attempt + 1 < attempts:
-                sleeper(0.01 * (attempt + 1))
-    raise OSError(f"could not remove Vision staging directory: {staging}") from last_error
+        elapsed = monotonic() - started_at
+        if (attempts is not None and attempt >= attempts) or elapsed >= timeout_seconds:
+            remaining = _remaining_staging_entries(staging)
+            error = StagingCleanupError(
+                "could not remove Vision staging generation "
+                f"path={staging} attempts={attempt} elapsed_seconds={elapsed:.3f} "
+                f"errno={getattr(last_error, 'errno', None)} "
+                f"winerror={getattr(last_error, 'winerror', None)} "
+                f"remaining_entries={remaining!r}"
+            )
+            raise error from last_error
+        sleep_for = min(delay, max(0.0, timeout_seconds - elapsed))
+        if sleep_for <= 0:
+            continue
+        sleeper(sleep_for)
+        delay = min(delay * 2, _MAX_CLEANUP_DELAY_SECONDS)
+
+
+def _create_managed_staging(output: Path, generation_id: str) -> Path:
+    namespace = _managed_staging_namespace(output)
+    _recover_managed_staging(namespace)
+    namespace.parent.mkdir(parents=True, exist_ok=True)
+    if namespace.parent.is_symlink():
+        raise DataCoverageError("managed Vision staging root must not be a symlink")
+    namespace.mkdir(exist_ok=True)
+    if namespace.is_symlink() or not namespace.is_dir():
+        raise DataCoverageError("managed Vision staging namespace is invalid")
+    staging = namespace / f"{_GENERATION_PREFIX}{generation_id}"
+    staging.mkdir()
+    return staging
+
+
+def _write_cleanup_ready_marker(staging: Path) -> Path:
+    """Atomically mark a retained generation as safe for a later cleanup."""
+    marker = staging / _CLEANUP_READY_MARKER
+    if marker.is_symlink():
+        raise OSError(f"managed Vision cleanup marker must not be a symlink: {marker}")
+    with marker.open("w", encoding="utf-8") as handle:
+        handle.write("ready\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    if marker.is_symlink() or not marker.is_file():
+        raise OSError(f"managed Vision cleanup marker is not a regular file: {marker}")
+    return marker
+
+
+def _restore_cleanup_ready_marker(staging: Path) -> Path:
+    """Restore a marker removed by a partial staging cleanup."""
+    return _write_cleanup_ready_marker(staging)
+
+
+def _managed_staging_namespace(output: Path) -> Path:
+    return output.parent / _MANAGED_STAGING_DIRECTORY / output.name
+
+
+def _recover_managed_staging(namespace: Path) -> None:
+    root = namespace.parent
+    if root.is_symlink():
+        raise DataCoverageError("managed Vision staging root must not be a symlink")
+    if root.exists() and not root.is_dir():
+        raise DataCoverageError("managed Vision staging root is invalid")
+    if namespace.is_symlink():
+        raise DataCoverageError("managed Vision staging namespace must not be a symlink")
+    if not namespace.exists():
+        return
+    if not namespace.is_dir():
+        raise DataCoverageError("managed Vision staging namespace is invalid")
+    entries = list(namespace.iterdir())
+    if any(
+        entry.is_symlink() or not entry.is_dir() or not _is_managed_generation_name(entry.name)
+        for entry in entries
+    ):
+        raise DataCoverageError("managed Vision staging namespace contains an unknown entry")
+    if any(
+        (entry / _CLEANUP_READY_MARKER).is_symlink()
+        or not (entry / _CLEANUP_READY_MARKER).is_file()
+        for entry in entries
+    ):
+        raise DataCoverageError("managed Vision staging namespace contains an active generation")
+    for entry in entries:
+        _remove_staging_directory(entry)
+
+
+def _is_managed_generation_name(name: str) -> bool:
+    suffix = name.removeprefix(_GENERATION_PREFIX)
+    if not name.startswith(_GENERATION_PREFIX) or len(suffix) != 32 or suffix != suffix.lower():
+        return False
+    try:
+        int(suffix, 16)
+    except ValueError:
+        return False
+    return True
+
+
+def _remaining_staging_entries(staging: Path) -> tuple[str, ...]:
+    try:
+        return tuple(sorted(path.name for path in staging.iterdir()))
+    except FileNotFoundError:
+        return ()
+    except OSError as exc:
+        return (f"<unreadable:{exc!r}>",)
 
 
 def _rest_suffix_metadata(value: object) -> dict[str, str] | None:

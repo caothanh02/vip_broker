@@ -300,6 +300,11 @@ class _FakeVisionClient:
         return [candle for candle in self.candles if start_time <= candle.open_time < end_time]
 
 
+def _managed_generations(output: Path) -> list[Path]:
+    namespace = output.parent / ".vision-staging" / output.name
+    return sorted(namespace.glob("generation-*")) if namespace.exists() else []
+
+
 def test_vision_generation_publishes_three_matching_artifacts(tmp_path: Path) -> None:
     output = tmp_path / "btc.csv"
     client = _FakeVisionClient([_candle(0), _candle(1)])
@@ -311,6 +316,7 @@ def test_vision_generation_publishes_three_matching_artifacts(tmp_path: Path) ->
     assert metadata["generation_id"] == report["generation_id"]
     assert metadata["stored_candle_count"] == 2
     assert verify_metadata_checksum(output) is True
+    assert _managed_generations(output) == []
 
 
 def test_metadata_and_report_record_checksum_verification_mode(tmp_path: Path) -> None:
@@ -370,12 +376,169 @@ def test_vision_generation_rolls_back_if_commit_marker_replace_fails(
         original_replace(source, target)
 
     monkeypatch.setattr(historical, "_replace_generation_file", fail_metadata)
-    with pytest.raises(OSError, match="simulated"):
+    with pytest.raises(OSError, match="simulated") as raised:
         asyncio.run(
             download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
         )
     assert {path.name: path.read_bytes() for path in official} == before
     assert not list(tmp_path.glob(".btc.csv.generation.*"))
+    generations = _managed_generations(output)
+    if generations:
+        assert len(generations) == 1
+        retained = generations[0]
+        assert retained.parent == tmp_path / ".vision-staging" / output.name
+        assert not retained.is_symlink()
+        assert (retained / ".cleanup-ready").is_file()
+        diagnostic = "\n".join(getattr(raised.value, "__notes__", []))
+        assert "staging cleanup failure" in diagnostic
+        assert str(retained) in diagnostic
+        assert "attempts=" in diagnostic
+        assert "elapsed_seconds=" in diagnostic
+        assert "remaining_entries=" in diagnostic
+    else:
+        assert generations == []
+    assert verify_metadata_checksum(output) is True
+
+
+def test_partial_cleanup_restores_marker_after_marker_is_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trading_bot.data.historical as historical
+
+    output = tmp_path / "btc.csv"
+    client = _FakeVisionClient([_candle(0), _candle(1)])
+    asyncio.run(
+        download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+    )
+    official = (output, output.with_suffix(".anomalies.json"), metadata_path(output))
+    before = {path.name: path.read_bytes() for path in official}
+    original_replace = historical._replace_generation_file
+
+    def fail_metadata(source: Path, target: Path) -> None:
+        if target == metadata_path(output):
+            raise OSError("simulated metadata publish failure")
+        original_replace(source, target)
+
+    def delete_marker_then_fail(staging: Path, *args: object, **kwargs: object) -> None:
+        (staging / ".cleanup-ready").unlink()
+        raise historical.StagingCleanupError(
+            "could not remove Vision staging generation "
+            f"path={staging} attempts=3 elapsed_seconds=0.150 errno=None "
+            "winerror=145 remaining_entries=('btc.csv',)"
+        )
+
+    monkeypatch.setattr(historical, "_replace_generation_file", fail_metadata)
+    monkeypatch.setattr(historical, "_remove_staging_directory", delete_marker_then_fail)
+    with pytest.raises(OSError, match="simulated") as raised:
+        asyncio.run(
+            download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+        )
+
+    generations = _managed_generations(output)
+    assert len(generations) == 1
+    marker = generations[0] / ".cleanup-ready"
+    assert marker.is_file()
+    assert not marker.is_symlink()
+    assert {path.name: path.read_bytes() for path in official} == before
+    assert verify_metadata_checksum(output) is True
+    notes = "\n".join(raised.value.__notes__)
+    assert "simulated metadata publish failure" in str(raised.value)
+    assert "staging cleanup marker restored" in notes
+    assert f"marker_path={marker}" in notes
+
+
+def test_cleanup_exception_after_directory_disappears_does_not_recreate_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trading_bot.data.historical as historical
+
+    output = tmp_path / "btc.csv"
+    client = _FakeVisionClient([_candle(0), _candle(1)])
+    asyncio.run(
+        download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+    )
+    official = (output, output.with_suffix(".anomalies.json"), metadata_path(output))
+    before = {path.name: path.read_bytes() for path in official}
+    original_replace = historical._replace_generation_file
+
+    def fail_metadata(source: Path, target: Path) -> None:
+        if target == metadata_path(output):
+            raise OSError("simulated metadata publish failure")
+        original_replace(source, target)
+
+    def remove_then_raise(staging: Path, *args: object, **kwargs: object) -> None:
+        historical.shutil.rmtree(staging)
+        raise historical.StagingCleanupError(
+            f"could not remove Vision staging generation path={staging}"
+        )
+
+    monkeypatch.setattr(historical, "_replace_generation_file", fail_metadata)
+    monkeypatch.setattr(historical, "_remove_staging_directory", remove_then_raise)
+    with pytest.raises(OSError, match="simulated") as raised:
+        asyncio.run(
+            download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+        )
+
+    assert _managed_generations(output) == []
+    assert not list((tmp_path / ".vision-staging").rglob(".cleanup-ready"))
+    assert {path.name: path.read_bytes() for path in official} == before
+    assert verify_metadata_checksum(output) is True
+    assert not any(
+        "staging cleanup failure" in note for note in getattr(raised.value, "__notes__", ())
+    )
+
+
+def test_marker_restoration_failure_retains_unrecoverable_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trading_bot.data.historical as historical
+
+    output = tmp_path / "btc.csv"
+    client = _FakeVisionClient([_candle(0), _candle(1)])
+    asyncio.run(
+        download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+    )
+    official = (output, output.with_suffix(".anomalies.json"), metadata_path(output))
+    before = {path.name: path.read_bytes() for path in official}
+    original_replace = historical._replace_generation_file
+
+    def fail_metadata(source: Path, target: Path) -> None:
+        if target == metadata_path(output):
+            raise OSError("simulated metadata publish failure")
+        original_replace(source, target)
+
+    def delete_marker_then_fail(staging: Path, *args: object, **kwargs: object) -> None:
+        (staging / ".cleanup-ready").unlink()
+        raise historical.StagingCleanupError(
+            f"could not remove Vision staging generation path={staging}"
+        )
+
+    def fail_marker_restoration(staging: Path) -> Path:
+        raise OSError(f"simulated marker restoration failure: {staging}")
+
+    monkeypatch.setattr(historical, "_replace_generation_file", fail_metadata)
+    monkeypatch.setattr(historical, "_remove_staging_directory", delete_marker_then_fail)
+    monkeypatch.setattr(historical, "_restore_cleanup_ready_marker", fail_marker_restoration)
+    with pytest.raises(OSError, match="simulated metadata") as raised:
+        asyncio.run(
+            download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+        )
+
+    generations = _managed_generations(output)
+    assert len(generations) == 1
+    assert not (generations[0] / ".cleanup-ready").exists()
+    notes = "\n".join(raised.value.__notes__)
+    assert "staging cleanup marker restoration failure" in notes
+    assert f"staging_path={generations[0]}" in notes
+    assert f"marker_path={generations[0] / '.cleanup-ready'}" in notes
+    assert {path.name: path.read_bytes() for path in official} == before
+    assert verify_metadata_checksum(output) is True
+
+    with pytest.raises(DataCoverageError, match="active generation"):
+        asyncio.run(
+            download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+        )
+    assert {path.name: path.read_bytes() for path in official} == before
     assert verify_metadata_checksum(output) is True
 
 
@@ -428,6 +591,46 @@ def test_vision_cleanup_propagates_persistent_windows_directory_not_empty(
     assert calls == 3
 
 
+def test_vision_cleanup_deadline_reports_remaining_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trading_bot.data.historical as historical
+
+    staging = tmp_path / "generation"
+    staging.mkdir()
+    (staging / "btc.csv.previous").write_text("old", encoding="utf-8")
+    now = 0.0
+    delays: list[float] = []
+
+    def monotonic() -> float:
+        return now
+
+    def sleeper(delay: float) -> None:
+        nonlocal now
+        delays.append(delay)
+        now += delay
+
+    def locked(_: Path) -> None:
+        error = OSError("directory not empty")
+        error.winerror = 145
+        raise error
+
+    monkeypatch.setattr(historical.shutil, "rmtree", locked)
+    with pytest.raises(historical.StagingCleanupError) as raised:
+        historical._remove_staging_directory(
+            staging,
+            timeout_seconds=0.12,
+            sleeper=sleeper,
+            monotonic=monotonic,
+        )
+    message = str(raised.value)
+    assert "attempts=3" in message
+    assert "elapsed_seconds=0.120" in message
+    assert "winerror=145" in message
+    assert "btc.csv.previous" in message
+    assert delays == pytest.approx([0.05, 0.07])
+
+
 def test_cleanup_does_not_retry_nontransient_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -454,7 +657,108 @@ def test_successful_vision_publish_leaves_no_generation_directory(tmp_path: Path
         )
     )
     assert not list(tmp_path.glob(".btc.csv.generation.*"))
+    assert _managed_generations(output) == []
     assert verify_metadata_checksum(output) is True
+
+
+def test_retained_managed_generation_is_recovered_before_next_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trading_bot.data.historical as historical
+
+    output = tmp_path / "btc.csv"
+    client = _FakeVisionClient([_candle(0), _candle(1)])
+    asyncio.run(
+        download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+    )
+    official = (output, output.with_suffix(".anomalies.json"), metadata_path(output))
+    before = {path.name: path.read_bytes() for path in official}
+    original_replace = historical._replace_generation_file
+    original_remove = historical._remove_staging_directory
+    failed_metadata = False
+    retained = False
+
+    def fail_metadata_once(source: Path, target: Path) -> None:
+        nonlocal failed_metadata
+        if target == metadata_path(output) and not failed_metadata:
+            failed_metadata = True
+            raise OSError("simulated metadata publish failure")
+        original_replace(source, target)
+
+    def retain_current_generation(staging: Path, *args: object, **kwargs: object) -> None:
+        nonlocal retained
+        if not retained:
+            retained = True
+            (staging / ".cleanup-ready").unlink()
+            raise historical.StagingCleanupError(
+                f"could not remove Vision staging generation path={staging}"
+            )
+        original_remove(staging, *args, **kwargs)
+
+    monkeypatch.setattr(historical, "_replace_generation_file", fail_metadata_once)
+    monkeypatch.setattr(historical, "_remove_staging_directory", retain_current_generation)
+    with pytest.raises(OSError, match="simulated") as raised:
+        asyncio.run(
+            download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+        )
+    assert any("staging cleanup failure" in note for note in raised.value.__notes__)
+    assert {path.name: path.read_bytes() for path in official} == before
+    assert verify_metadata_checksum(output) is True
+    generations = _managed_generations(output)
+    assert len(generations) == 1
+    marker = generations[0] / ".cleanup-ready"
+    assert marker.is_file()
+    assert not marker.is_symlink()
+    assert any("staging cleanup marker restored" in note for note in raised.value.__notes__)
+
+    monkeypatch.setattr(historical, "_replace_generation_file", original_replace)
+    monkeypatch.setattr(historical, "_remove_staging_directory", original_remove)
+    asyncio.run(
+        download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
+    )
+    assert _managed_generations(output) == []
+    assert verify_metadata_checksum(output) is True
+
+
+def test_managed_staging_preflight_rejects_unknown_entries(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    namespace = tmp_path / ".vision-staging" / output.name
+    namespace.mkdir(parents=True)
+    (namespace / "unknown").write_text("do not delete", encoding="utf-8")
+
+    with pytest.raises(DataCoverageError, match="unknown entry"):
+        asyncio.run(
+            download_vision_historical_csv(
+                _FakeVisionClient([_candle(0), _candle(1)]),
+                BASE,
+                BASE + timedelta(hours=2),
+                output,
+                True,
+            )
+        )
+    assert (namespace / "unknown").read_text(encoding="utf-8") == "do not delete"
+    assert not output.exists()
+
+
+def test_managed_staging_preflight_does_not_delete_active_generation(tmp_path: Path) -> None:
+    output = tmp_path / "btc.csv"
+    namespace = tmp_path / ".vision-staging" / output.name
+    active = namespace / ("generation-" + "a" * 32)
+    active.mkdir(parents=True)
+    (active / "in-progress").write_text("active", encoding="utf-8")
+
+    with pytest.raises(DataCoverageError, match="active generation"):
+        asyncio.run(
+            download_vision_historical_csv(
+                _FakeVisionClient([_candle(0), _candle(1)]),
+                BASE,
+                BASE + timedelta(hours=2),
+                output,
+                True,
+            )
+        )
+    assert (active / "in-progress").read_text(encoding="utf-8") == "active"
+    assert not output.exists()
 
 
 def test_metadata_rejects_missing_or_mismatched_anomaly_sidecar(tmp_path: Path) -> None:
