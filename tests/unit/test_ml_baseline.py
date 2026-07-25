@@ -365,6 +365,26 @@ def test_artifact_rejects_malformed_threshold_policy(tmp_path: Path, bad_policy:
         )
 
 
+@pytest.mark.parametrize(
+    "error",
+    [ValueError("bad"), TypeError("bad"), RecursionError("bad"), pickle.UnpicklingError("bad")],
+)
+def test_artifact_wraps_pickle_loads_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    dataset = _canonical_dataset(tmp_path)
+    output = tmp_path / "model"
+    summary = train_logistic_baseline(dataset, output)
+    monkeypatch.setattr(pickle, "loads", lambda _: (_ for _ in ()).throw(error))
+    with pytest.raises(ModelArtifactError) as raised:
+        load_sealed_baseline_artifact(
+            output,
+            dataset_generation_id=summary.dataset_generation_id,
+            source_generation_id=summary.source_generation_id,
+        )
+    assert raised.value.__cause__ is error
+
+
 def test_valid_test_labels_do_not_change_model_threshold_or_validation_metrics(
     tmp_path: Path,
 ) -> None:

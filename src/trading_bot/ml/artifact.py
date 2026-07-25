@@ -175,23 +175,33 @@ def load_sealed_baseline_artifact(
         or training_configuration != manifest.get("training_configuration")
     ):
         raise ModelArtifactError("model artifact contract is invalid")
+    feature_count = len(FEATURE_COLUMNS)
     try:
         payload = pickle.loads(snapshots["model.pkl"])
-    except (
-        pickle.UnpicklingError,
-        EOFError,
-        AttributeError,
-        ImportError,
-        IndexError,
-        KeyError,
-    ) as exc:
+    except Exception as exc:
         raise ModelArtifactError("model artifact pickle is invalid") from exc
-    if not isinstance(payload, Mapping) or set(payload) != {"scaler", "model"}:
+    try:
+        return _validate_pickle_payload(
+            payload, feature_count, float(threshold), dataset_generation_id, source_generation_id
+        )
+    except ModelArtifactError:
+        raise
+    except Exception as exc:
+        raise ModelArtifactError("model artifact contract is invalid") from exc
+
+
+def _validate_pickle_payload(
+    payload: object,
+    feature_count: int,
+    threshold: float,
+    dataset_generation_id: str,
+    source_generation_id: str,
+) -> SealedBaselineArtifact:
+    if type(payload) is not dict or set(payload) != {"scaler", "model"}:
         raise ModelArtifactError("model artifact pickle is invalid")
     scaler, model = payload.get("scaler"), payload.get("model")
     if not isinstance(scaler, StandardScaler) or not isinstance(model, LogisticRegression):
         raise ModelArtifactError("model artifact type is invalid")
-    feature_count = len(FEATURE_COLUMNS)
     if (
         scaler.with_mean is not True
         or scaler.with_std is not True

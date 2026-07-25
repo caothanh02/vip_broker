@@ -428,6 +428,20 @@ def test_vision_cleanup_propagates_persistent_windows_directory_not_empty(
     assert calls == 3
 
 
+def test_cleanup_does_not_retry_nontransient_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import trading_bot.data.historical as historical
+
+    sleeper: list[float] = []
+    error = OSError("disk failure")
+    monkeypatch.setattr(historical.shutil, "rmtree", lambda _: (_ for _ in ()).throw(error))
+    with pytest.raises(OSError) as raised:
+        historical._remove_staging_directory(tmp_path / "staging", sleeper=sleeper.append)
+    assert raised.value is error
+    assert sleeper == []
+
+
 def test_successful_vision_publish_leaves_no_generation_directory(tmp_path: Path) -> None:
     output = tmp_path / "btc.csv"
     asyncio.run(
