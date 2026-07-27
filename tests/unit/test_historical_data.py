@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
+import websockets
 
 from trading_bot.cli import _settings_snapshot, main, parse_utc
 from trading_bot.data.binance import BinancePublicClient
@@ -30,6 +32,7 @@ from trading_bot.data.csv_store import (
     merge_candles,
     read_candles,
     write_candles_atomic,
+    write_json_atomic,
 )
 from trading_bot.data.historical import DataCoverageError, download_historical_csv
 from trading_bot.data.validation import CandleValidationError, validate_candles
@@ -126,6 +129,80 @@ def test_binance_client_omits_current_open_candle() -> None:
     assert calls == 0
 
 
+def test_public_websocket_reconnects_and_yields_only_closed_candles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    events: list[str] = []
+    sleeps: list[float] = []
+
+    class Socket:
+        async def __aenter__(self) -> Socket:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        def __aiter__(self) -> Socket:
+            self.messages = iter(
+                [
+                    json.dumps({"k": {"x": False}}),
+                    json.dumps(
+                        {
+                            "k": {
+                                "x": True,
+                                "t": kline(0)[0],
+                                "T": kline(0)[6],
+                                "o": "100",
+                                "h": "101",
+                                "l": "99",
+                                "c": "100",
+                                "v": "1",
+                            }
+                        }
+                    ),
+                ]
+            )
+            return self
+
+        async def __anext__(self) -> str:
+            try:
+                return next(self.messages)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    def connect(_: str) -> Socket:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise websockets.WebSocketException("disconnect")
+        return Socket()
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("trading_bot.data.binance.websockets.connect", connect)
+    monkeypatch.setattr("trading_bot.data.binance.asyncio.sleep", sleep)
+
+    async def next_closed() -> Candle:
+        stream = BinancePublicClient().closed_klines(
+            on_connected=lambda: events.append("connected"),
+            on_disconnected=lambda: events.append("disconnected"),
+        )
+        try:
+            return await anext(stream)
+        finally:
+            await stream.aclose()
+
+    received = asyncio.run(next_closed())
+    assert received.open_time == candle(0).open_time
+    assert received.close_time == candle(0).close_time
+    assert received.is_closed
+    assert attempts == 2
+    assert sleeps == [1.0]
+    assert events == ["disconnected", "connected"]
+
+
 def test_binance_client_retries_429_and_fails_malformed_payload() -> None:
     calls = 0
     sleeps: list[float] = []
@@ -195,6 +272,31 @@ def test_csv_round_trip_deduplicates_and_rejects_conflicts(tmp_path: Path) -> No
     with pytest.raises(CsvDataError):
         write_candles_atomic(path, [candle(0), candle(2)])
     assert path.read_text(encoding="utf-8") == original
+
+
+def test_atomic_json_write_retries_transient_windows_replace_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "state.json"
+    original_replace = os.replace
+    calls = 0
+    sleeps: list[float] = []
+
+    def locked_replace(source: str | Path, target: str | Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            error = PermissionError(5, "Access is denied")
+            error.winerror = 5
+            raise error
+        original_replace(source, target)
+
+    monkeypatch.setattr("trading_bot.data.csv_store.os.replace", locked_replace)
+    monkeypatch.setattr("trading_bot.data.csv_store.time.sleep", sleeps.append)
+    write_json_atomic(output, {"mode": "dry_run"})
+    assert json.loads(output.read_text(encoding="utf-8")) == {"mode": "dry_run"}
+    assert calls == 3
+    assert sleeps == [0.01, 0.02]
 
 
 class FakeClient:

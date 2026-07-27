@@ -3,6 +3,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp/
 .mypy_cache/
 .ruff_cache/
 data/raw/*
@@ -19,6 +20,7 @@ models/*
 reports/backtests/*
 reports/ml/*
 reports/dry_run/*
+data/dry_run/*
 reports/*.json
 !reports/**/.gitkeep
 *.db

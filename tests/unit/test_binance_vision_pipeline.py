@@ -34,6 +34,15 @@ from trading_bot.domain.models import Candle
 BASE = datetime(2024, 1, 1, tzinfo=UTC)
 
 
+def _official_artifact_snapshot(output: Path) -> dict[str, bytes]:
+    artifacts = (
+        output,
+        output.with_name(f"{output.name}.metadata.json"),
+        output.with_name(f"{output.stem}.anomalies.json"),
+    )
+    return {path.name: path.read_bytes() for path in artifacts}
+
+
 def _candle(hour: int, price: str = "100") -> Candle:
     value = Decimal(price)
     return Candle(
@@ -359,7 +368,7 @@ def test_vision_generation_rolls_back_if_commit_marker_replace_fails(
     asyncio.run(
         download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
     )
-    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    before = _official_artifact_snapshot(output)
     original_replace = historical._replace_generation_file
 
     def fail_metadata(source: Path, target: Path) -> None:
@@ -372,7 +381,7 @@ def test_vision_generation_rolls_back_if_commit_marker_replace_fails(
         asyncio.run(
             download_vision_historical_csv(client, BASE, BASE + timedelta(hours=2), output, True)
         )
-    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+    assert _official_artifact_snapshot(output) == before
     assert verify_metadata_checksum(output) is True
 
 

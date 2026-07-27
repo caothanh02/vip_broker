@@ -24,7 +24,7 @@ train, tune, evaluate, backtest, or enable live trading.
 
 ## Dry-run and operations
 
-`make dry-run` uses a paper broker and cannot submit an exchange order. Configure public data and SQLite through `.env.example`; do not create a secret-bearing `.env` in source control. Optional FastAPI health endpoints are `/health/live`, `/health/ready`, `/metrics` after installing the `api` extra. See `docs/` for architecture, strategy, risk, ML, backtesting, deployment and operations.
+`make dry-run` first replays validated closed candles through `DryRunBroker`; it writes a resumable paper state under ignored `data/dry_run/`. To use public market data only after replay/tests pass, run `uv run trading-bot dry-run --public --state data/dry_run/btcusdt_1h.state.json`. It bootstraps and recovers gaps with public REST, then reconnects the public closed-kline WebSocket with bounded exponential backoff. No API key is read and no Binance order endpoint exists in this path. State includes paper cash, position, pending signals, risk/circuit-breaker state and recent feature warm-up candles; it is saved atomically after each candle. Stop safely with `Ctrl+C`: the last completed candle has already been persisted. With the optional `api` extra, add `--health-port 8080` to expose local-only `/health/live`, `/health/ready`, and `/metrics`; the health payload includes the latest closed candle and stream status. See `docs/` for architecture, strategy, risk, ML, backtesting, deployment and operations.
 
 ## Live mode is locked
 

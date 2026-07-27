@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -130,10 +131,30 @@ def _atomic_write(path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        _replace_with_retry(temporary, path)
     finally:
         if temporary is not None and temporary.exists():
             temporary.unlink()
+
+
+def _replace_with_retry(temporary: Path, path: Path) -> None:
+    """Tolerate a short-lived Windows scanner/indexer handle during publication."""
+    deadline = time.monotonic() + 3.0
+    delay = 0.01
+    while True:
+        try:
+            os.replace(temporary, path)
+            return
+        except OSError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not _is_transient_replace_error(exc):
+                raise
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 0.25)
+
+
+def _is_transient_replace_error(error: OSError) -> bool:
+    return getattr(error, "winerror", None) in {5, 32}
 
 
 def write_candles_atomic(

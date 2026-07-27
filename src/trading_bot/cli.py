@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from trading_bot.backtest.engine import CandleBacktester
+from trading_bot.data.binance import BinancePublicClient
 from trading_bot.data.binance_historical import BinanceDataError, BinanceHistoricalDataClient
 from trading_bot.data.binance_vision import BinanceVisionError, BinanceVisionHistoricalClient
 from trading_bot.data.csv_store import (
@@ -34,6 +35,14 @@ from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle, Trade
 from trading_bot.ml.baseline import BaselineTrainingError, train_logistic_baseline
 from trading_bot.ml.dataset import DatasetBuildError, build_ml_dataset
+from trading_bot.monitoring.health import create_app
+from trading_bot.runtime.dry_run import (
+    DryRunEngine,
+    DryRunError,
+    DryRunService,
+    DryRunStateStore,
+    replay,
+)
 from trading_bot.settings import BotSettings, load_settings
 
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
@@ -176,8 +185,19 @@ def build_parser() -> argparse.ArgumentParser:
     train = subcommands.add_parser("train")
     train.add_argument("--dataset-dir", type=Path, required=True)
     train.add_argument("--output-dir", type=Path, required=True)
-    for name in ("evaluate", "walk-forward", "dry-run", "report"):
+    for name in ("evaluate", "walk-forward", "report"):
         subcommands.add_parser(name)
+    dry_run = subcommands.add_parser("dry-run")
+    source = dry_run.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--replay", type=Path, help="validated closed-candle CSV for deterministic paper replay"
+    )
+    source.add_argument(
+        "--public", action="store_true", help="public Binance REST/WebSocket market data"
+    )
+    dry_run.add_argument("--state", type=Path, default=Path("data/dry_run/btcusdt_1h.state.json"))
+    dry_run.add_argument("--max-candles", type=int, default=None)
+    dry_run.add_argument("--health-port", type=int, help="optional local health endpoint port")
     return parser
 
 
@@ -329,6 +349,96 @@ def _train(args: argparse.Namespace) -> None:
     )
 
 
+def _dry_run_settings(settings: BotSettings) -> BotSettings:
+    if settings.ml_filter_enabled:
+        raise ValueError("dry-run ML filtering is not enabled by this command")
+    values = settings.model_dump()
+    values["bot_mode"] = "dry_run"
+    return BotSettings.model_validate(values)
+
+
+async def _public_dry_run(
+    service: DryRunService,
+    settings: BotSettings,
+    max_candles: int | None,
+    health_port: int | None,
+) -> int:
+    server: Any | None = None
+    server_task: asyncio.Task[None] | None = None
+    if health_port is not None:
+        try:
+            import uvicorn
+        except ImportError as exc:
+            raise ValueError("install the api extra to serve dry-run health endpoints") from exc
+        server = uvicorn.Server(
+            uvicorn.Config(create_app(service.engine.status), host="127.0.0.1", port=health_port)
+        )
+        server_task = asyncio.create_task(server.serve())
+    await service.bootstrap()
+    client = BinancePublicClient(
+        BinanceHistoricalDataClient(
+            base_url=settings.binance_public_base_url,
+            timeout_seconds=settings.http_timeout_seconds,
+            max_retries=settings.http_max_retries,
+        )
+    )
+    stream = client.closed_klines(
+        on_connected=lambda: setattr(service.engine.health, "websocket_connected", True),
+        on_disconnected=lambda: setattr(service.engine.health, "websocket_connected", False),
+    )
+    try:
+        return await service.consume(stream, max_candles)
+    finally:
+        service.engine.health.websocket_connected = False
+        service.engine.persist()
+        if server is not None:
+            server.should_exit = True
+        if server_task is not None:
+            await server_task
+
+
+def _dry_run(args: argparse.Namespace, settings: BotSettings) -> None:
+    if args.max_candles is not None and args.max_candles <= 0:
+        raise ValueError("--max-candles must be positive")
+    if args.health_port is not None and not 1 <= args.health_port <= 65_535:
+        raise ValueError("--health-port must be between 1 and 65535")
+    if args.replay is not None and args.health_port is not None:
+        raise ValueError("--health-port is available only with --public")
+    paper_settings = _dry_run_settings(settings)
+    engine = DryRunEngine(paper_settings, DryRunStateStore(args.state))
+    rest = BinanceHistoricalDataClient(
+        base_url=paper_settings.binance_public_base_url,
+        timeout_seconds=paper_settings.http_timeout_seconds,
+        max_retries=paper_settings.http_max_retries,
+    )
+    service = DryRunService(engine, rest)
+    if args.replay is not None:
+        candles = read_candles(args.replay)
+        validate_candles(candles)
+        processed = asyncio.run(replay(service, candles))
+    else:
+        processed = asyncio.run(
+            _public_dry_run(service, paper_settings, args.max_candles, args.health_port)
+        )
+    print(
+        json.dumps(
+            {
+                "mode": "dry_run",
+                "processed_closed_candles": processed,
+                "state_file": str(args.state),
+                "health": engine.status(),
+                "safety_locks": {
+                    "broker": "DryRunBroker",
+                    "live_trading_enabled": False,
+                    "binance_orders_sent": False,
+                    "ml_filter_enabled": False,
+                },
+            },
+            indent=2,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -345,9 +455,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "train":
             _train(args)
         elif args.command == "dry-run":
-            print(
-                "Dry-run safety check complete: paper broker only; no exchange orders can be sent."
-            )
+            _dry_run(args, settings)
         else:
             print(f"{args.command}: no live activity performed.")
     except (
@@ -358,6 +466,7 @@ def main(argv: list[str] | None = None) -> int:
         DataCoverageError,
         DatasetBuildError,
         BaselineTrainingError,
+        DryRunError,
         ValueError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)

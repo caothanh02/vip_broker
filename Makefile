@@ -5,6 +5,7 @@ DATA_FILE ?= data/raw/btcusdt_1h.csv
 ML_DATASET_DIR ?= data/datasets/btcusdt_1h_v1
 ML_MODEL_DIR ?= models/btcusdt_1h_logistic_v1
 REPORT_FILE ?= reports/backtests/btcusdt_1h_baseline.json
+PYTEST_BASETEMP ?= .pytest-tmp
 install:
 	uv sync --extra dev
 format:
@@ -14,7 +15,7 @@ lint:
 typecheck:
 	uv run mypy src
 test:
-	uv run pytest
+	uv run pytest --basetemp=$(PYTEST_BASETEMP)
 download-data:
 	uv run trading-bot download-data --start $(DATA_START) --end $(DATA_END) --output $(DATA_FILE)
 validate-data:
@@ -32,6 +33,6 @@ evaluate:
 walk-forward:
 	uv run trading-bot walk-forward
 dry-run:
-	uv run trading-bot dry-run
+	uv run trading-bot dry-run --replay $(DATA_FILE)
 report:
 	uv run trading-bot report

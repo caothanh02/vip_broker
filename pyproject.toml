@@ -22,10 +22,11 @@ trading-bot = "trading_bot.cli:main"
 packages = ["src/trading_bot"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --basetemp=.pytest-tmp"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = [".pytest-tmp", ".pytest-review-tmp"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
