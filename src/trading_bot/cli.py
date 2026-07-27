@@ -36,6 +36,15 @@ from trading_bot.domain.models import Candle, Trade
 from trading_bot.ml.baseline import BaselineTrainingError, train_logistic_baseline
 from trading_bot.ml.dataset import DatasetBuildError, build_ml_dataset
 from trading_bot.monitoring.health import create_app
+from trading_bot.recommendations.engine import (
+    RecommendationEngine,
+    RecommendationError,
+    RecommendationHistoryStore,
+    accuracy_report,
+    evaluate_outcomes,
+    outcome_json,
+    recommendation_json,
+)
 from trading_bot.runtime.dry_run import (
     DryRunEngine,
     DryRunError,
@@ -198,6 +207,13 @@ def build_parser() -> argparse.ArgumentParser:
     dry_run.add_argument("--state", type=Path, default=Path("data/dry_run/btcusdt_1h.state.json"))
     dry_run.add_argument("--max-candles", type=int, default=None)
     dry_run.add_argument("--health-port", type=int, help="optional local health endpoint port")
+    recommend = subcommands.add_parser("recommend")
+    recommend.add_argument("--input", type=Path, required=True)
+    recommend.add_argument("--output", type=Path, required=True)
+    recommend.add_argument("--history", type=Path)
+    evaluate_recommendations = subcommands.add_parser("evaluate-recommendations")
+    evaluate_recommendations.add_argument("--input", type=Path, required=True)
+    evaluate_recommendations.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -439,6 +455,48 @@ def _dry_run(args: argparse.Namespace, settings: BotSettings) -> None:
     )
 
 
+def _recommend(args: argparse.Namespace, settings: BotSettings) -> None:
+    candles = read_candles(args.input)
+    validate_candles(candles)
+    report = RecommendationEngine(settings).recommend(candles)
+    history_path = args.history or args.output.with_name("history.json")
+    store = RecommendationHistoryStore(history_path)
+    existing, _ = store.load()
+    by_id = {item.id: item for item in existing}
+    by_id[report.recommendation.id] = report.recommendation
+    recommendations = sorted(by_id.values(), key=lambda item: item.signal_candle_time)
+    outcomes = evaluate_outcomes(recommendations, candles, settings)
+    store.save(recommendations, outcomes)
+    payload = {
+        "schema_version": "1.0",
+        "mode": "recommendation_only",
+        "recommendation": recommendation_json(report.recommendation),
+        "feature_count": report.feature_count,
+        "history_file": str(history_path),
+        "outcomes": [
+            outcome_json(item)
+            for item in outcomes
+            if item.recommendation_id == report.recommendation.id
+        ],
+        "safety_locks": {
+            "live_trading_enabled": False,
+            "broker_used": False,
+            "binance_orders_sent": False,
+            "ml_probability_used": report.recommendation.probability_up is not None,
+        },
+    }
+    write_json_atomic(args.output, payload)
+    print(json.dumps(payload, indent=2))
+
+
+def _evaluate_recommendations(args: argparse.Namespace) -> None:
+    recommendations, outcomes = RecommendationHistoryStore(args.input).load()
+    payload = accuracy_report(recommendations, outcomes)
+    payload.update({"schema_version": "1.0", "input": str(args.input)})
+    write_json_atomic(args.output, payload)
+    print(json.dumps(payload, indent=2))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -456,6 +514,10 @@ def main(argv: list[str] | None = None) -> int:
             _train(args)
         elif args.command == "dry-run":
             _dry_run(args, settings)
+        elif args.command == "recommend":
+            _recommend(args, settings)
+        elif args.command == "evaluate-recommendations":
+            _evaluate_recommendations(args)
         else:
             print(f"{args.command}: no live activity performed.")
     except (
@@ -467,6 +529,7 @@ def main(argv: list[str] | None = None) -> int:
         DatasetBuildError,
         BaselineTrainingError,
         DryRunError,
+        RecommendationError,
         ValueError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -1,0 +1,522 @@
+"""Recommendation-only research path; it deliberately has no execution dependencies."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any, Protocol
+
+from trading_bot.data.csv_store import write_json_atomic
+from trading_bot.data.validation import CandleValidationError, validate_candles
+from trading_bot.domain.models import (
+    Candle,
+    Recommendation,
+    RecommendationOutcome,
+    RecommendationOutcomeStatus,
+    RecommendationType,
+)
+from trading_bot.features.pipeline import FEATURE_COLUMNS, FEATURE_SCHEMA_VERSION, build_features
+from trading_bot.settings import BotSettings
+from trading_bot.strategy.ema_volume_atr import EmaVolumeAtrStrategy
+
+HORIZONS: tuple[str, ...] = ("1h", "4h", "24h")
+_HORIZON_CANDLES = {"1h": 1, "4h": 4, "24h": 24}
+_RULE_CONFIDENCE = 0.55
+_MIN_CONCLUSIVE_SAMPLES = 30
+
+
+class RecommendationError(ValueError):
+    """A persisted recommendation history is malformed or incompatible."""
+
+
+class ProbabilityModel(Protocol):
+    """Optional inference-only model contract; no model is loaded by the CLI."""
+
+    model_version: str
+    feature_schema_version: str
+    production_eligible: bool
+    live_trading_enabled: bool
+
+    def probability_up(self, values: Mapping[str, float]) -> float: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RecommendationReport:
+    recommendation: Recommendation
+    feature_count: int
+
+
+def _utc(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc(value: object, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise RecommendationError(f"{field} must be an ISO UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RecommendationError(f"{field} is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise RecommendationError(f"{field} must be UTC")
+    return parsed.astimezone(UTC)
+
+
+def _decimal(value: object, field: str) -> Decimal:
+    if not isinstance(value, str):
+        raise RecommendationError(f"{field} must be a decimal string")
+    try:
+        result = Decimal(value)
+    except InvalidOperation as exc:
+        raise RecommendationError(f"{field} is invalid") from exc
+    if not result.is_finite():
+        raise RecommendationError(f"{field} must be finite")
+    return result
+
+
+class RecommendationEngine:
+    """Generate one causal, non-executable recommendation from closed BTC/USDT candles."""
+
+    def __init__(
+        self,
+        settings: BotSettings,
+        model: ProbabilityModel | None = None,
+        require_model: bool = False,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        if settings.bot_mode == "live":
+            raise RecommendationError("live mode is disabled")
+        self.settings = settings
+        self.strategy = EmaVolumeAtrStrategy(settings)
+        self.model = model
+        self.require_model = require_model
+        self.now = now or (lambda: datetime.now(UTC))
+
+    def recommend(self, candles: Sequence[Candle]) -> RecommendationReport:
+        items = list(candles)
+        if not items:
+            raise RecommendationError("recommendations require at least one candle")
+        try:
+            validate_candles(items)
+        except CandleValidationError:
+            return RecommendationReport(
+                self._neutral(
+                    items[-1],
+                    "invalid_or_gapped_candle_data",
+                    "invalid_or_gapped_candle_data",
+                ),
+                0,
+            )
+        features = build_features(items)
+        current = features.iloc[-1]
+        needed = ["ema20", "ema50", "ema200", "volume_sma20", "atr14"]
+        if len(features) < 2 or current[needed].isna().any():
+            return RecommendationReport(
+                self._neutral(
+                    items[-1], "insufficient_feature_history", "insufficient_feature_history"
+                ),
+                0,
+            )
+        signal = self.strategy.entry(features, False, False, False)
+        if signal is None:
+            return RecommendationReport(
+                self._neutral(items[-1], "no_rule_candidate"), len(FEATURE_COLUMNS)
+            )
+        values = {column: float(current[column]) for column in FEATURE_COLUMNS}
+        if not all(math.isfinite(value) for value in values.values()):
+            return RecommendationReport(self._neutral(items[-1], "non_finite_features"), 0)
+        model_result = self._model_result(items[-1], values)
+        if model_result is None:
+            return RecommendationReport(
+                self._rule_buy(items[-1], Decimal(str(signal.atr))), len(values)
+            )
+        if isinstance(model_result, Recommendation):
+            return RecommendationReport(model_result, len(values))
+        probability, version = model_result
+        recommendation = (
+            RecommendationType.BUY_BIAS
+            if probability >= 0.55
+            else RecommendationType.AVOID
+            if probability <= 0.45
+            else RecommendationType.NEUTRAL
+        )
+        return RecommendationReport(
+            self._create(
+                items[-1],
+                recommendation,
+                probability,
+                abs(probability - 0.5) * 2,
+                version,
+                "rule_candidate_ml_filter",
+                Decimal(str(signal.atr)),
+            ),
+            len(values),
+        )
+
+    def _model_result(
+        self, candle: Candle, values: Mapping[str, float]
+    ) -> tuple[float, str] | Recommendation | None:
+        if self.model is None:
+            return (
+                self._neutral(candle, "model_required_but_missing") if self.require_model else None
+            )
+        if self.model.feature_schema_version != FEATURE_SCHEMA_VERSION:
+            return self._neutral(candle, "model_feature_schema_mismatch")
+        if not self.model.production_eligible or self.model.live_trading_enabled:
+            return self._neutral(candle, "model_not_eligible_for_recommendations")
+        try:
+            probability = float(self.model.probability_up(values))
+        except (TypeError, ValueError) as exc:
+            raise RecommendationError("recommendation model inference failed") from exc
+        if not math.isfinite(probability) or not 0 <= probability <= 1:
+            return self._neutral(candle, "model_probability_invalid")
+        return probability, self.model.model_version
+
+    def _neutral(
+        self, candle: Candle, reason: str, data_quality: str = "validated_closed_contiguous"
+    ) -> Recommendation:
+        return self._create(
+            candle,
+            RecommendationType.NEUTRAL,
+            None,
+            0.0,
+            None,
+            reason,
+            None,
+            data_quality,
+        )
+
+    def _rule_buy(self, candle: Candle, atr: Decimal) -> Recommendation:
+        return self._create(
+            candle,
+            RecommendationType.BUY_BIAS,
+            None,
+            _RULE_CONFIDENCE,
+            None,
+            "ema_volume_atr_rule_candidate_rule_only",
+            atr,
+        )
+
+    def _create(
+        self,
+        candle: Candle,
+        kind: RecommendationType,
+        probability_up: float | None,
+        confidence: float,
+        model_version: str | None,
+        reason: str,
+        atr: Decimal | None,
+        data_quality: str = "validated_closed_contiguous",
+    ) -> Recommendation:
+        identifier = hashlib.sha256(
+            f"BTC/USDT|1h|{_utc(candle.close_time)}|{FEATURE_SCHEMA_VERSION}".encode()
+        ).hexdigest()[:32]
+        entry = candle.close
+        return Recommendation(
+            identifier,
+            self.now().astimezone(UTC),
+            candle.close_time,
+            "BTC/USDT",
+            "1h",
+            HORIZONS,
+            kind,
+            probability_up,
+            confidence,
+            model_version,
+            FEATURE_SCHEMA_VERSION,
+            reason,
+            data_quality,
+            entry,
+            entry - Decimal("2") * atr if atr is not None else None,
+            entry + Decimal("4") * atr if atr is not None else None,
+        )
+
+
+def evaluate_outcomes(
+    recommendations: Iterable[Recommendation], candles: Sequence[Candle], settings: BotSettings
+) -> list[RecommendationOutcome]:
+    items = list(candles)
+    validate_candles(items)
+    by_close = {candle.close_time: index for index, candle in enumerate(items)}
+    costs = (
+        settings.entry_fee_rate
+        + settings.exit_fee_rate
+        + settings.entry_slippage_rate
+        + settings.exit_slippage_rate
+    )
+    outcomes: list[RecommendationOutcome] = []
+    for recommendation in recommendations:
+        signal_index = by_close.get(recommendation.signal_candle_time)
+        for horizon in recommendation.horizons:
+            steps = _HORIZON_CANDLES.get(horizon)
+            if signal_index is None or steps is None or signal_index + steps >= len(items):
+                outcomes.append(
+                    RecommendationOutcome(
+                        recommendation.id,
+                        horizon,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        RecommendationOutcomeStatus.INSUFFICIENT_FUTURE_DATA,
+                    )
+                )
+                continue
+            future = items[signal_index + steps]
+            raw_return = future.close / recommendation.entry_reference - Decimal("1")
+            realized = raw_return - costs
+            path = items[signal_index + 1 : signal_index + steps + 1]
+            invalidated = bool(
+                recommendation.invalidation_price is not None
+                and any(candle.low <= recommendation.invalidation_price for candle in path)
+            )
+            target = bool(
+                not invalidated
+                and recommendation.target_price is not None
+                and any(candle.high >= recommendation.target_price for candle in path)
+            )
+            correct = (
+                realized > 0
+                if recommendation.recommendation == RecommendationType.BUY_BIAS
+                else realized <= 0
+                if recommendation.recommendation == RecommendationType.AVOID
+                else None
+            )
+            outcomes.append(
+                RecommendationOutcome(
+                    recommendation.id,
+                    horizon,
+                    future.close_time,
+                    realized,
+                    correct,
+                    target,
+                    invalidated,
+                    RecommendationOutcomeStatus.RESOLVED,
+                )
+            )
+    return outcomes
+
+
+def accuracy_report(
+    recommendations: Iterable[Recommendation], outcomes: Iterable[RecommendationOutcome]
+) -> dict[str, Any]:
+    records = {item.id: item for item in recommendations}
+    result: dict[str, Any] = {"horizons": {}, "inconclusive": True}
+    for horizon in HORIZONS:
+        resolved = [
+            item
+            for item in outcomes
+            if item.horizon == horizon and item.status == RecommendationOutcomeStatus.RESOLVED
+        ]
+        applicable = [
+            item
+            for item in resolved
+            if records.get(item.recommendation_id) is not None
+            and records[item.recommendation_id].recommendation != RecommendationType.NEUTRAL
+        ]
+        buy = [
+            item
+            for item in applicable
+            if records[item.recommendation_id].recommendation == RecommendationType.BUY_BIAS
+        ]
+        avoid = [
+            item
+            for item in applicable
+            if records[item.recommendation_id].recommendation == RecommendationType.AVOID
+        ]
+        neutral_count = sum(
+            record.recommendation == RecommendationType.NEUTRAL for record in records.values()
+        )
+        correct = sum(item.direction_correct is True for item in applicable)
+        probabilities: list[tuple[float, bool]] = []
+        for item in resolved:
+            record = records.get(item.recommendation_id)
+            if (
+                record is not None
+                and record.probability_up is not None
+                and item.realized_return is not None
+            ):
+                probabilities.append((record.probability_up, item.realized_return > 0))
+        brier = (
+            sum((probability - float(up)) ** 2 for probability, up in probabilities)
+            / len(probabilities)
+            if probabilities
+            else None
+        )
+        calibration = (
+            {
+                "sample_size": len(probabilities),
+                "mean_predicted_probability_up": sum(
+                    probability for probability, _ in probabilities
+                )
+                / len(probabilities),
+                "observed_up_rate": sum(up for _, up in probabilities) / len(probabilities),
+            }
+            if probabilities
+            else None
+        )
+        sample = len(applicable)
+        accuracy = correct / sample if sample else None
+        interval = (
+            1.96 * math.sqrt(accuracy * (1 - accuracy) / sample)
+            if accuracy is not None and sample >= 2
+            else None
+        )
+        result["horizons"][horizon] = {
+            "total_recommendations": len(records),
+            "resolved_recommendations": len(resolved),
+            "coverage": len(resolved) / len(records) if records else 0.0,
+            "directional_accuracy": accuracy,
+            "buy_bias_precision": sum(item.direction_correct is True for item in buy) / len(buy)
+            if buy
+            else None,
+            "avoid_precision": sum(item.direction_correct is True for item in avoid) / len(avoid)
+            if avoid
+            else None,
+            "neutral_rate": neutral_count / len(records) if records else 0.0,
+            "brier_score": brier,
+            "calibration": calibration,
+            "sample_size": sample,
+            "directional_accuracy_95ci_half_width": interval,
+            "inconclusive": sample < _MIN_CONCLUSIVE_SAMPLES,
+        }
+    result["inconclusive"] = all(item["inconclusive"] for item in result["horizons"].values())
+    return result
+
+
+def recommendation_json(item: Recommendation) -> dict[str, Any]:
+    payload = asdict(item)
+    payload["created_at"] = _utc(item.created_at)
+    payload["signal_candle_time"] = _utc(item.signal_candle_time)
+    payload["recommendation"] = item.recommendation.value
+    payload["entry_reference"] = str(item.entry_reference)
+    payload["invalidation_price"] = (
+        str(item.invalidation_price) if item.invalidation_price else None
+    )
+    payload["target_price"] = str(item.target_price) if item.target_price else None
+    return payload
+
+
+def outcome_json(item: RecommendationOutcome) -> dict[str, Any]:
+    payload = asdict(item)
+    payload["resolved_at"] = _utc(item.resolved_at) if item.resolved_at else None
+    payload["realized_return"] = str(item.realized_return) if item.realized_return else None
+    payload["status"] = item.status.value
+    return payload
+
+
+def _recommendation_from_json(value: object) -> Recommendation:
+    if not isinstance(value, dict):
+        raise RecommendationError("recommendation record is invalid")
+    try:
+        kind = RecommendationType(value["recommendation"])
+        horizons = tuple(value["horizons"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RecommendationError("recommendation record is invalid") from exc
+    if horizons != HORIZONS or not isinstance(value.get("id"), str):
+        raise RecommendationError("recommendation record has unsupported schema")
+    probability = value.get("probability_up")
+    confidence = value.get("confidence")
+    if probability is not None and (
+        not isinstance(probability, (int, float)) or not 0 <= probability <= 1
+    ):
+        raise RecommendationError("recommendation probability is invalid")
+    if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+        raise RecommendationError("recommendation confidence is invalid")
+    for field in ("symbol", "timeframe", "feature_schema_version", "rule_reason", "data_quality"):
+        if not isinstance(value.get(field), str):
+            raise RecommendationError(f"recommendation {field} is invalid")
+    if value["symbol"] != "BTC/USDT" or value["timeframe"] != "1h":
+        raise RecommendationError("recommendation market is invalid")
+    model_version = value.get("model_version")
+    if model_version is not None and not isinstance(model_version, str):
+        raise RecommendationError("recommendation model version is invalid")
+    invalidation = value.get("invalidation_price")
+    target = value.get("target_price")
+    return Recommendation(
+        value["id"],
+        _parse_utc(value.get("created_at"), "created_at"),
+        _parse_utc(value.get("signal_candle_time"), "signal_candle_time"),
+        value["symbol"],
+        value["timeframe"],
+        horizons,
+        kind,
+        float(probability) if probability is not None else None,
+        float(confidence),
+        model_version,
+        value["feature_schema_version"],
+        value["rule_reason"],
+        value["data_quality"],
+        _decimal(value.get("entry_reference"), "entry_reference"),
+        _decimal(invalidation, "invalidation_price") if invalidation is not None else None,
+        _decimal(target, "target_price") if target is not None else None,
+    )
+
+
+def _outcome_from_json(value: object) -> RecommendationOutcome:
+    if not isinstance(value, dict):
+        raise RecommendationError("outcome record is invalid")
+    try:
+        status = RecommendationOutcomeStatus(value["status"])
+    except (KeyError, ValueError) as exc:
+        raise RecommendationError("outcome status is invalid") from exc
+    if not isinstance(value.get("recommendation_id"), str) or value.get("horizon") not in HORIZONS:
+        raise RecommendationError("outcome record is invalid")
+    return RecommendationOutcome(
+        value["recommendation_id"],
+        value["horizon"],
+        _parse_utc(value["resolved_at"], "resolved_at") if value.get("resolved_at") else None,
+        _decimal(value["realized_return"], "realized_return")
+        if value.get("realized_return")
+        else None,
+        value.get("direction_correct")
+        if isinstance(value.get("direction_correct"), bool)
+        else None,
+        value.get("target_hit") if isinstance(value.get("target_hit"), bool) else None,
+        value.get("invalidation_hit") if isinstance(value.get("invalidation_hit"), bool) else None,
+        status,
+    )
+
+
+class RecommendationHistoryStore:
+    """Atomic, secret-free local recommendation and outcome history."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def load(self) -> tuple[list[Recommendation], list[RecommendationOutcome]]:
+        if not self.path.exists():
+            return [], []
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RecommendationError("could not read recommendation history") from exc
+        if not isinstance(payload, dict) or payload.get("schema_version") != "1.0":
+            raise RecommendationError("unsupported recommendation history schema")
+        recommendations = payload.get("recommendations")
+        outcomes = payload.get("outcomes")
+        if not isinstance(recommendations, list) or not isinstance(outcomes, list):
+            raise RecommendationError("recommendation history records are invalid")
+        return (
+            [_recommendation_from_json(item) for item in recommendations],
+            [_outcome_from_json(item) for item in outcomes],
+        )
+
+    def save(
+        self, recommendations: Iterable[Recommendation], outcomes: Iterable[RecommendationOutcome]
+    ) -> None:
+        write_json_atomic(
+            self.path,
+            {
+                "schema_version": "1.0",
+                "recommendations": [recommendation_json(item) for item in recommendations],
+                "outcomes": [outcome_json(item) for item in outcomes],
+            },
+        )
