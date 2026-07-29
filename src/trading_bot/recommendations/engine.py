@@ -31,6 +31,7 @@ HORIZONS: tuple[str, ...] = ("1h", "4h", "24h")
 _HORIZON_CANDLES = {"1h": 1, "4h": 4, "24h": 24}
 _RULE_CONFIDENCE = 0.55
 _MIN_CONCLUSIVE_SAMPLES = 30
+_MIN_RESEARCH_CLAIM_SAMPLES = 100
 
 
 class RecommendationError(ValueError):
@@ -111,12 +112,16 @@ class RecommendationEngine:
         self.require_model = require_model
         self.now = now or (lambda: datetime.now(UTC))
 
-    def recommend(self, candles: Sequence[Candle]) -> RecommendationReport:
+    def recommend(
+        self,
+        candles: Sequence[Candle],
+        allowed_missing_open_times: set[datetime] | None = None,
+    ) -> RecommendationReport:
         items = list(candles)
         if not items:
             raise RecommendationError("recommendations require at least one candle")
         try:
-            validate_candles(items)
+            segments = continuous_candle_segments(items, allowed_missing_open_times)
         except CandleValidationError:
             return RecommendationReport(
                 self._neutral(
@@ -126,8 +131,9 @@ class RecommendationEngine:
                 ),
                 0,
             )
-        features = build_features(items)
-        return self._recommend_from_causal_feature_window(items[-1], features)
+        latest_segment = segments[-1]
+        features = build_features(latest_segment)
+        return self._recommend_from_causal_feature_window(latest_segment[-1], features)
 
     def _recommend_from_causal_feature_window(
         self, candle: Candle, features: pd.DataFrame
@@ -263,12 +269,36 @@ class RecommendationEngine:
         )
 
 
+def continuous_candle_segments(
+    candles: Sequence[Candle],
+    allowed_missing_open_times: set[datetime] | None = None,
+) -> list[list[Candle]]:
+    """Split only sidecar-verified interruptions into independent causal segments."""
+
+    items = list(candles)
+    validate_candles(items, allowed_missing_open_times=allowed_missing_open_times)
+    segments: list[list[Candle]] = [[items[0]]]
+    interval = timedelta(hours=1)
+    for candle in items[1:]:
+        if candle.open_time != segments[-1][-1].open_time + interval:
+            segments.append([])
+        segments[-1].append(candle)
+    return segments
+
+
 def evaluate_outcomes(
-    recommendations: Iterable[Recommendation], candles: Sequence[Candle], settings: BotSettings
+    recommendations: Iterable[Recommendation],
+    candles: Sequence[Candle],
+    settings: BotSettings,
+    allowed_missing_open_times: set[datetime] | None = None,
 ) -> list[RecommendationOutcome]:
     items = list(candles)
-    validate_candles(items)
-    by_close = {candle.close_time: index for index, candle in enumerate(items)}
+    segments = continuous_candle_segments(items, allowed_missing_open_times)
+    by_close = {
+        candle.close_time: (segment, index)
+        for segment in segments
+        for index, candle in enumerate(segment)
+    }
     costs = (
         settings.entry_fee_rate
         + settings.exit_fee_rate
@@ -277,10 +307,10 @@ def evaluate_outcomes(
     )
     outcomes: list[RecommendationOutcome] = []
     for recommendation in recommendations:
-        signal_index = by_close.get(recommendation.signal_candle_time)
+        signal = by_close.get(recommendation.signal_candle_time)
         for horizon in recommendation.horizons:
             steps = _HORIZON_CANDLES.get(horizon)
-            if signal_index is None or steps is None or signal_index + steps >= len(items):
+            if signal is None or steps is None:
                 outcomes.append(
                     RecommendationOutcome(
                         recommendation.id,
@@ -294,15 +324,30 @@ def evaluate_outcomes(
                     )
                 )
                 continue
-            future = items[signal_index + steps]
+            segment, signal_index = signal
+            if signal_index + steps >= len(segment):
+                outcomes.append(
+                    RecommendationOutcome(
+                        recommendation.id,
+                        horizon,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        RecommendationOutcomeStatus.INSUFFICIENT_FUTURE_DATA,
+                    )
+                )
+                continue
+            future = segment[signal_index + steps]
             reference = (
                 recommendation.entry_reference
                 if recommendation.entry_reference is not None
-                else items[signal_index].close
+                else segment[signal_index].close
             )
             raw_return = future.close / reference - Decimal("1")
             realized = raw_return - costs
-            path = items[signal_index + 1 : signal_index + steps + 1]
+            path = segment[signal_index + 1 : signal_index + steps + 1]
             invalidated = (
                 bool(
                     recommendation.invalidation_price is not None
@@ -389,19 +434,24 @@ def validate_strict_oos_history(
 
 
 def backfill_recommendations(
-    engine: RecommendationEngine, candles: Sequence[Candle]
+    engine: RecommendationEngine,
+    candles: Sequence[Candle],
+    allowed_missing_open_times: set[datetime] | None = None,
 ) -> list[Recommendation]:
-    """Create causal recommendations while calculating trailing features once."""
+    """Create causal recommendations without carrying state across an interruption."""
 
     items = list(candles)
-    validate_candles(items)
-    features = build_features(items)
-    return [
-        engine._recommend_from_causal_feature_window(
-            items[index], features.iloc[max(0, index - 1) : index + 1].copy()
-        ).recommendation
-        for index in range(len(items))
-    ]
+    segments = continuous_candle_segments(items, allowed_missing_open_times)
+    recommendations: list[Recommendation] = []
+    for segment in segments:
+        features = build_features(segment)
+        recommendations.extend(
+            engine._recommend_from_causal_feature_window(
+                segment[index], features.iloc[max(0, index - 1) : index + 1].copy()
+            ).recommendation
+            for index in range(len(segment))
+        )
+    return recommendations
 
 
 def accuracy_report(
@@ -469,6 +519,12 @@ def accuracy_report(
             if accuracy is not None and sample >= 2
             else None
         )
+        research_claim_eligible = (
+            sample >= _MIN_RESEARCH_CLAIM_SAMPLES
+            and accuracy is not None
+            and interval is not None
+            and accuracy - interval > 0.5
+        )
         result["horizons"][horizon] = {
             "total_recommendations": len(records),
             "resolved_recommendations": len(resolved),
@@ -486,8 +542,12 @@ def accuracy_report(
             "sample_size": sample,
             "directional_accuracy_95ci_half_width": interval,
             "inconclusive": sample < _MIN_CONCLUSIVE_SAMPLES,
+            "research_claim_eligible": research_claim_eligible,
         }
     result["inconclusive"] = all(item["inconclusive"] for item in result["horizons"].values())
+    result["research_claim_eligible"] = all(
+        item["research_claim_eligible"] for item in result["horizons"].values()
+    )
     return result
 
 

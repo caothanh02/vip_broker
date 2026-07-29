@@ -25,6 +25,10 @@ The sparse candidate count means a supervised ML filter is not eligible until th
 sample is enlarged with additional verified pre-2025 history or a separately justified candidate
 definition. Do not fit or present a model from the current 52--53 samples.
 
+Datasets with a checksum-verified, audited market interruption may be used for research, but each
+continuous candle segment is independent: indicators warm up again after the interruption and no
+recommendation outcome may cross it. An unknown or unverified gap is rejected.
+
 ## Development workflow
 
 1. Freeze the input checksum, feature schema, cost model, and candidate definition for one
