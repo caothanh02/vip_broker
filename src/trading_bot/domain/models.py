@@ -13,6 +13,17 @@ class Side(StrEnum):
     SELL = "sell"
 
 
+class RecommendationType(StrEnum):
+    BUY_BIAS = "BUY_BIAS"
+    NEUTRAL = "NEUTRAL"
+    AVOID = "AVOID"
+
+
+class RecommendationOutcomeStatus(StrEnum):
+    RESOLVED = "resolved"
+    INSUFFICIENT_FUTURE_DATA = "insufficient_future_data"
+
+
 class OrderStatus(StrEnum):
     NEW = "new"
     FILLED = "filled"
@@ -152,3 +163,35 @@ class ModelMetadata:
     ranges: dict[str, str]
     metrics: dict[str, float]
     checksum: str
+
+
+@dataclass(frozen=True, slots=True)
+class Recommendation:
+    id: str
+    created_at: datetime
+    signal_candle_time: datetime
+    symbol: str
+    timeframe: str
+    horizons: tuple[str, ...]
+    recommendation: RecommendationType
+    probability_up: float | None
+    confidence: float
+    model_version: str | None
+    feature_schema_version: str
+    rule_reason: str
+    data_quality: str
+    entry_reference: Decimal | None
+    invalidation_price: Decimal | None
+    target_price: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class RecommendationOutcome:
+    recommendation_id: str
+    horizon: str
+    resolved_at: datetime | None
+    realized_return: Decimal | None
+    direction_correct: bool | None
+    target_hit: bool | None
+    invalidation_hit: bool | None
+    status: RecommendationOutcomeStatus
