@@ -30,6 +30,8 @@ train, tune, evaluate, backtest, or enable live trading.
 
 `trading-bot recommend --input <validated.csv> --output reports/recommendations/latest.json` produces a BTC/USDT 1h `BUY_BIAS`, `NEUTRAL`, or `AVOID` research recommendation from closed candles. `AVOID` means avoid opening a long/buy; it is never a short instruction. Use `backfill-recommendations --input <validated.csv> --output reports/recommendations/history.json` to create an out-of-sample, candle-by-candle history before evaluating it. Strict OOS histories lock their UTC boundary and input checksum to prevent evidence from being mixed. It has no broker, order, balance, or live-trading path. Recommendation outcomes are resolved only once 1h, 4h, or 24h of future closed candles are available and are evaluated after the configured cost model. Run `evaluate-recommendations` on the persisted JSON history for coverage and accuracy; reports with fewer than 30 applicable outcomes are explicitly `inconclusive`. This is not financial or investment advice. See [recommendation documentation](docs/recommendations.md).
 
+Before changing a recommendation rule or filter, follow the [research protocol](docs/recommendation-research.md): 2025 is a sealed holdout, and no recommendation claim is made without sufficient chronological development and OOS evidence.
+
 ## Live mode is locked
 
 `BotSettings` rejects `BOT_MODE=live`; `BinanceBroker` always raises before any operation. This is a deliberate project safety boundary, even if environment variables or API secrets are present. Before any future long-running dry run: download/validate recent history, train a compatible model if ML is enabled, run walk-forward on unseen periods, and monitor data gaps/circuit-breaker state.
