@@ -180,7 +180,7 @@ class Recommendation:
     feature_schema_version: str
     rule_reason: str
     data_quality: str
-    entry_reference: Decimal
+    entry_reference: Decimal | None
     invalidation_price: Decimal | None
     target_price: Decimal | None
 

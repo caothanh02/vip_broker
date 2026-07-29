@@ -12,6 +12,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Protocol
 
+import pandas as pd
+
 from trading_bot.data.csv_store import write_json_atomic
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import (
@@ -50,6 +52,17 @@ class ProbabilityModel(Protocol):
 class RecommendationReport:
     recommendation: Recommendation
     feature_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecommendationHistoryProvenance:
+    """Audit metadata that prevents strict OOS evidence from being mixed."""
+
+    strict_oos: bool
+    evaluation_start: datetime | None = None
+    input_sha256: str | None = None
+    input_first_close: datetime | None = None
+    input_last_close: datetime | None = None
 
 
 def _utc(value: datetime) -> str:
@@ -114,27 +127,34 @@ class RecommendationEngine:
                 0,
             )
         features = build_features(items)
+        return self._recommend_from_causal_feature_window(items[-1], features)
+
+    def _recommend_from_causal_feature_window(
+        self, candle: Candle, features: pd.DataFrame
+    ) -> RecommendationReport:
+        """Recommend from a causal feature window ending at ``candle``."""
+
         current = features.iloc[-1]
         needed = ["ema20", "ema50", "ema200", "volume_sma20", "atr14"]
         if len(features) < 2 or current[needed].isna().any():
             return RecommendationReport(
                 self._neutral(
-                    items[-1], "insufficient_feature_history", "insufficient_feature_history"
+                    candle, "insufficient_feature_history", "insufficient_feature_history"
                 ),
                 0,
             )
         signal = self.strategy.entry(features, False, False, False)
         if signal is None:
             return RecommendationReport(
-                self._neutral(items[-1], "no_rule_candidate"), len(FEATURE_COLUMNS)
+                self._neutral(candle, "no_rule_candidate"), len(FEATURE_COLUMNS)
             )
         values = {column: float(current[column]) for column in FEATURE_COLUMNS}
         if not all(math.isfinite(value) for value in values.values()):
-            return RecommendationReport(self._neutral(items[-1], "non_finite_features"), 0)
-        model_result = self._model_result(items[-1], values)
+            return RecommendationReport(self._neutral(candle, "non_finite_features"), 0)
+        model_result = self._model_result(candle, values)
         if model_result is None:
             return RecommendationReport(
-                self._rule_buy(items[-1], Decimal(str(signal.atr))), len(values)
+                self._rule_buy(candle, Decimal(str(signal.atr))), len(values)
             )
         if isinstance(model_result, Recommendation):
             return RecommendationReport(model_result, len(values))
@@ -146,14 +166,19 @@ class RecommendationEngine:
             if probability <= 0.45
             else RecommendationType.NEUTRAL
         )
+        reason = (
+            "rule_candidate_ml_filter_avoid_buy"
+            if recommendation == RecommendationType.AVOID
+            else "rule_candidate_ml_filter"
+        )
         return RecommendationReport(
             self._create(
-                items[-1],
+                candle,
                 recommendation,
                 probability,
                 abs(probability - 0.5) * 2,
                 version,
-                "rule_candidate_ml_filter",
+                reason,
                 Decimal(str(signal.atr)),
             ),
             len(values),
@@ -217,7 +242,7 @@ class RecommendationEngine:
         identifier = hashlib.sha256(
             f"BTC/USDT|1h|{_utc(candle.close_time)}|{FEATURE_SCHEMA_VERSION}".encode()
         ).hexdigest()[:32]
-        entry = candle.close
+        entry = candle.close if kind != RecommendationType.AVOID else None
         return Recommendation(
             identifier,
             self.now().astimezone(UTC),
@@ -233,8 +258,8 @@ class RecommendationEngine:
             reason,
             data_quality,
             entry,
-            entry - Decimal("2") * atr if atr is not None else None,
-            entry + Decimal("4") * atr if atr is not None else None,
+            entry - Decimal("2") * atr if entry is not None and atr is not None else None,
+            entry + Decimal("4") * atr if entry is not None and atr is not None else None,
         )
 
 
@@ -270,17 +295,30 @@ def evaluate_outcomes(
                 )
                 continue
             future = items[signal_index + steps]
-            raw_return = future.close / recommendation.entry_reference - Decimal("1")
+            reference = (
+                recommendation.entry_reference
+                if recommendation.entry_reference is not None
+                else items[signal_index].close
+            )
+            raw_return = future.close / reference - Decimal("1")
             realized = raw_return - costs
             path = items[signal_index + 1 : signal_index + steps + 1]
-            invalidated = bool(
-                recommendation.invalidation_price is not None
-                and any(candle.low <= recommendation.invalidation_price for candle in path)
+            invalidated = (
+                bool(
+                    recommendation.invalidation_price is not None
+                    and any(candle.low <= recommendation.invalidation_price for candle in path)
+                )
+                if recommendation.recommendation != RecommendationType.AVOID
+                else None
             )
-            target = bool(
-                not invalidated
-                and recommendation.target_price is not None
-                and any(candle.high >= recommendation.target_price for candle in path)
+            target = (
+                bool(
+                    not invalidated
+                    and recommendation.target_price is not None
+                    and any(candle.high >= recommendation.target_price for candle in path)
+                )
+                if recommendation.recommendation != RecommendationType.AVOID
+                else None
             )
             correct = (
                 realized > 0
@@ -302,6 +340,50 @@ def evaluate_outcomes(
                 )
             )
     return outcomes
+
+
+def merge_recommendations(
+    existing: Iterable[Recommendation], updates: Iterable[Recommendation]
+) -> list[Recommendation]:
+    """Merge deterministic recommendations without duplicating a signal identity."""
+
+    by_id = {item.id: item for item in existing}
+    for item in updates:
+        by_id.setdefault(item.id, item)
+    return sorted(by_id.values(), key=lambda item: (item.signal_candle_time, item.id))
+
+
+def merge_outcomes(
+    existing: Iterable[RecommendationOutcome], updates: Iterable[RecommendationOutcome]
+) -> list[RecommendationOutcome]:
+    """Resolved outcomes are immutable; incomplete outcomes may be promoted."""
+
+    by_key = {(item.recommendation_id, item.horizon): item for item in existing}
+    for item in updates:
+        key = (item.recommendation_id, item.horizon)
+        current = by_key.get(key)
+        if current is None or current.status != RecommendationOutcomeStatus.RESOLVED:
+            by_key[key] = item
+    return sorted(
+        by_key.values(),
+        key=lambda item: (item.recommendation_id, _HORIZON_CANDLES[item.horizon]),
+    )
+
+
+def backfill_recommendations(
+    engine: RecommendationEngine, candles: Sequence[Candle]
+) -> list[Recommendation]:
+    """Create causal recommendations while calculating trailing features once."""
+
+    items = list(candles)
+    validate_candles(items)
+    features = build_features(items)
+    return [
+        engine._recommend_from_causal_feature_window(
+            items[index], features.iloc[max(0, index - 1) : index + 1].copy()
+        ).recommendation
+        for index in range(len(items))
+    ]
 
 
 def accuracy_report(
@@ -396,18 +478,22 @@ def recommendation_json(item: Recommendation) -> dict[str, Any]:
     payload["created_at"] = _utc(item.created_at)
     payload["signal_candle_time"] = _utc(item.signal_candle_time)
     payload["recommendation"] = item.recommendation.value
-    payload["entry_reference"] = str(item.entry_reference)
-    payload["invalidation_price"] = (
-        str(item.invalidation_price) if item.invalidation_price else None
+    payload["entry_reference"] = (
+        str(item.entry_reference) if item.entry_reference is not None else None
     )
-    payload["target_price"] = str(item.target_price) if item.target_price else None
+    payload["invalidation_price"] = (
+        str(item.invalidation_price) if item.invalidation_price is not None else None
+    )
+    payload["target_price"] = str(item.target_price) if item.target_price is not None else None
     return payload
 
 
 def outcome_json(item: RecommendationOutcome) -> dict[str, Any]:
     payload = asdict(item)
     payload["resolved_at"] = _utc(item.resolved_at) if item.resolved_at else None
-    payload["realized_return"] = str(item.realized_return) if item.realized_return else None
+    payload["realized_return"] = (
+        str(item.realized_return) if item.realized_return is not None else None
+    )
     payload["status"] = item.status.value
     return payload
 
@@ -440,6 +526,19 @@ def _recommendation_from_json(value: object) -> Recommendation:
         raise RecommendationError("recommendation model version is invalid")
     invalidation = value.get("invalidation_price")
     target = value.get("target_price")
+    entry = value.get("entry_reference")
+    if kind == RecommendationType.AVOID:
+        # Legacy histories could contain long levels for AVOID. Discard them so an
+        # avoid-buy recommendation can never be presented as a short trade.
+        if entry is not None:
+            _decimal(entry, "entry_reference")
+        if invalidation is not None:
+            _decimal(invalidation, "invalidation_price")
+        if target is not None:
+            _decimal(target, "target_price")
+        parsed_entry = None
+    else:
+        parsed_entry = _decimal(entry, "entry_reference")
     return Recommendation(
         value["id"],
         _parse_utc(value.get("created_at"), "created_at"),
@@ -454,9 +553,17 @@ def _recommendation_from_json(value: object) -> Recommendation:
         value["feature_schema_version"],
         value["rule_reason"],
         value["data_quality"],
-        _decimal(value.get("entry_reference"), "entry_reference"),
-        _decimal(invalidation, "invalidation_price") if invalidation is not None else None,
-        _decimal(target, "target_price") if target is not None else None,
+        parsed_entry,
+        (
+            _decimal(invalidation, "invalidation_price")
+            if kind != RecommendationType.AVOID and invalidation is not None
+            else None
+        ),
+        (
+            _decimal(target, "target_price")
+            if kind != RecommendationType.AVOID and target is not None
+            else None
+        ),
     )
 
 
@@ -492,31 +599,97 @@ class RecommendationHistoryStore:
         self.path = path
 
     def load(self) -> tuple[list[Recommendation], list[RecommendationOutcome]]:
+        recommendations, outcomes, _, _ = self.load_with_provenance()
+        return recommendations, outcomes
+
+    def load_with_provenance(
+        self,
+    ) -> tuple[
+        list[Recommendation],
+        list[RecommendationOutcome],
+        RecommendationHistoryProvenance | None,
+        bool,
+    ]:
+        """Load records plus provenance; ``legacy`` is true for schema 1.0 files."""
+
         if not self.path.exists():
-            return [], []
+            return [], [], None, False
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RecommendationError("could not read recommendation history") from exc
-        if not isinstance(payload, dict) or payload.get("schema_version") != "1.0":
+        if not isinstance(payload, dict) or payload.get("schema_version") not in {"1.0", "1.1"}:
             raise RecommendationError("unsupported recommendation history schema")
         recommendations = payload.get("recommendations")
         outcomes = payload.get("outcomes")
         if not isinstance(recommendations, list) or not isinstance(outcomes, list):
             raise RecommendationError("recommendation history records are invalid")
-        return (
-            [_recommendation_from_json(item) for item in recommendations],
-            [_outcome_from_json(item) for item in outcomes],
-        )
+        records = [_recommendation_from_json(item) for item in recommendations]
+        restored_outcomes = [_outcome_from_json(item) for item in outcomes]
+        if payload["schema_version"] == "1.0":
+            return records, restored_outcomes, None, True
+        provenance = _provenance_from_json(payload.get("provenance"))
+        return records, restored_outcomes, provenance, False
 
     def save(
-        self, recommendations: Iterable[Recommendation], outcomes: Iterable[RecommendationOutcome]
+        self,
+        recommendations: Iterable[Recommendation],
+        outcomes: Iterable[RecommendationOutcome],
+        provenance: RecommendationHistoryProvenance | None = None,
     ) -> None:
+        current_provenance = provenance or RecommendationHistoryProvenance(False)
         write_json_atomic(
             self.path,
             {
-                "schema_version": "1.0",
+                "schema_version": "1.1",
+                "provenance": _provenance_json(current_provenance),
                 "recommendations": [recommendation_json(item) for item in recommendations],
                 "outcomes": [outcome_json(item) for item in outcomes],
             },
         )
+
+
+def _provenance_json(provenance: RecommendationHistoryProvenance) -> dict[str, Any]:
+    return {
+        "strict_oos": provenance.strict_oos,
+        "evaluation_start": _utc(provenance.evaluation_start)
+        if provenance.evaluation_start is not None
+        else None,
+        "input_sha256": provenance.input_sha256,
+        "input_first_close": _utc(provenance.input_first_close)
+        if provenance.input_first_close is not None
+        else None,
+        "input_last_close": _utc(provenance.input_last_close)
+        if provenance.input_last_close is not None
+        else None,
+    }
+
+
+def _provenance_from_json(value: object) -> RecommendationHistoryProvenance:
+    if not isinstance(value, dict) or not isinstance(value.get("strict_oos"), bool):
+        raise RecommendationError("recommendation history provenance is invalid")
+    strict_oos = value["strict_oos"]
+    evaluation_start = value.get("evaluation_start")
+    input_sha256 = value.get("input_sha256")
+    first_close = value.get("input_first_close")
+    last_close = value.get("input_last_close")
+    if strict_oos:
+        if not isinstance(input_sha256, str):
+            raise RecommendationError("strict OOS history input checksum is invalid")
+        if evaluation_start is None or first_close is None or last_close is None:
+            raise RecommendationError("strict OOS history provenance is incomplete")
+    for field, item in (
+        ("input_sha256", input_sha256),
+        ("evaluation_start", evaluation_start),
+        ("input_first_close", first_close),
+        ("input_last_close", last_close),
+    ):
+        if item is not None and not isinstance(item, str):
+            raise RecommendationError(f"history provenance {field} is invalid")
+    return RecommendationHistoryProvenance(
+        strict_oos,
+        _parse_utc(evaluation_start, "evaluation_start") if evaluation_start is not None else None,
+        input_sha256,
+        _parse_utc(first_close, "input_first_close") if first_close is not None else None,
+        _parse_utc(last_close, "input_last_close") if last_close is not None else None,
+    )

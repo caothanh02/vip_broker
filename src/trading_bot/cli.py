@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -39,9 +40,13 @@ from trading_bot.monitoring.health import create_app
 from trading_bot.recommendations.engine import (
     RecommendationEngine,
     RecommendationError,
+    RecommendationHistoryProvenance,
     RecommendationHistoryStore,
     accuracy_report,
+    backfill_recommendations,
     evaluate_outcomes,
+    merge_outcomes,
+    merge_recommendations,
     outcome_json,
     recommendation_json,
 )
@@ -91,6 +96,20 @@ def parse_utc(value: str) -> datetime:
         raise argparse.ArgumentTypeError(f"invalid UTC timestamp: {value}") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise argparse.ArgumentTypeError(f"timestamp must include a timezone offset: {value}")
+    return parsed.astimezone(UTC)
+
+
+def parse_strict_utc(value: str) -> datetime:
+    """Parse an OOS boundary explicitly expressed in UTC."""
+
+    if _DATE_ONLY.fullmatch(value):
+        return parse_utc(value)
+    try:
+        parsed = datetime.fromisoformat(f"{value[:-1]}+00:00" if value.endswith("Z") else value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid UTC timestamp: {value}") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise argparse.ArgumentTypeError(f"timestamp must be explicitly UTC: {value}")
     return parsed.astimezone(UTC)
 
 
@@ -211,6 +230,16 @@ def build_parser() -> argparse.ArgumentParser:
     recommend.add_argument("--input", type=Path, required=True)
     recommend.add_argument("--output", type=Path, required=True)
     recommend.add_argument("--history", type=Path)
+    backfill_recommendations_parser = subcommands.add_parser("backfill-recommendations")
+    backfill_recommendations_parser.add_argument("--input", type=Path, required=True)
+    backfill_recommendations_parser.add_argument(
+        "--output", type=Path, required=True, help="atomic recommendation history JSON"
+    )
+    backfill_recommendations_parser.add_argument(
+        "--evaluation-start",
+        type=parse_strict_utc,
+        help="UTC candle close time; earlier candles warm features but are not persisted",
+    )
     evaluate_recommendations = subcommands.add_parser("evaluate-recommendations")
     evaluate_recommendations.add_argument("--input", type=Path, required=True)
     evaluate_recommendations.add_argument("--output", type=Path, required=True)
@@ -461,12 +490,16 @@ def _recommend(args: argparse.Namespace, settings: BotSettings) -> None:
     report = RecommendationEngine(settings).recommend(candles)
     history_path = args.history or args.output.with_name("history.json")
     store = RecommendationHistoryStore(history_path)
-    existing, _ = store.load()
-    by_id = {item.id: item for item in existing}
-    by_id[report.recommendation.id] = report.recommendation
-    recommendations = sorted(by_id.values(), key=lambda item: item.signal_candle_time)
-    outcomes = evaluate_outcomes(recommendations, candles, settings)
-    store.save(recommendations, outcomes)
+    existing, existing_outcomes, provenance, _ = store.load_with_provenance()
+    if provenance is not None and provenance.strict_oos:
+        raise RecommendationError("locked OOS history only accepts backfill with its boundary")
+    recommendations = merge_recommendations(existing, [report.recommendation])
+    available_close_times = {candle.close_time for candle in candles}
+    resolvable = [
+        item for item in recommendations if item.signal_candle_time in available_close_times
+    ]
+    outcomes = merge_outcomes(existing_outcomes, evaluate_outcomes(resolvable, candles, settings))
+    store.save(recommendations, outcomes, RecommendationHistoryProvenance(False))
     payload = {
         "schema_version": "1.0",
         "mode": "recommendation_only",
@@ -489,10 +522,101 @@ def _recommend(args: argparse.Namespace, settings: BotSettings) -> None:
     print(json.dumps(payload, indent=2))
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _backfill_provenance(
+    args: argparse.Namespace, candles: list[Candle]
+) -> RecommendationHistoryProvenance:
+    if args.evaluation_start is None:
+        return RecommendationHistoryProvenance(False)
+    return RecommendationHistoryProvenance(
+        True,
+        args.evaluation_start,
+        _file_sha256(args.input),
+        candles[0].close_time,
+        candles[-1].close_time,
+    )
+
+
+def _backfill_recommendations(args: argparse.Namespace, settings: BotSettings) -> None:
+    candles = read_candles(args.input)
+    validate_candles(candles)
+    if args.evaluation_start is not None and args.evaluation_start not in {
+        candle.close_time for candle in candles
+    }:
+        raise ValueError("--evaluation-start must equal a closed candle timestamp in --input")
+    store = RecommendationHistoryStore(args.output)
+    existing, existing_outcomes, persisted_provenance, legacy = store.load_with_provenance()
+    requested_provenance = _backfill_provenance(args, candles)
+    if existing or existing_outcomes:
+        if legacy and args.evaluation_start is not None:
+            raise RecommendationError("legacy history cannot be used as strict OOS evidence")
+        if persisted_provenance is not None and persisted_provenance != requested_provenance:
+            raise RecommendationError("history provenance is locked; use a new output path")
+    elif legacy and args.evaluation_start is not None:
+        raise RecommendationError("legacy history cannot be used as strict OOS evidence")
+    generated = backfill_recommendations(RecommendationEngine(settings), candles)
+    if args.evaluation_start is not None:
+        generated = [item for item in generated if item.signal_candle_time >= args.evaluation_start]
+    recommendations = merge_recommendations(existing, generated)
+    available_close_times = {candle.close_time for candle in candles}
+    resolvable = [
+        item for item in recommendations if item.signal_candle_time in available_close_times
+    ]
+    outcomes = merge_outcomes(existing_outcomes, evaluate_outcomes(resolvable, candles, settings))
+    store.save(recommendations, outcomes, requested_provenance)
+    payload = {
+        "schema_version": "1.1",
+        "mode": "recommendation_backfill",
+        "history_file": str(args.output),
+        "generated_recommendations": len(generated),
+        "stored_recommendations": len(recommendations),
+        "stored_outcomes": len(outcomes),
+        "provenance": {
+            "strict_oos": requested_provenance.strict_oos,
+            "evaluation_start": (
+                args.evaluation_start.astimezone(UTC).isoformat().replace("+00:00", "Z")
+                if args.evaluation_start is not None
+                else None
+            ),
+            "input_sha256": requested_provenance.input_sha256,
+        },
+        "safety_locks": {
+            "live_trading_enabled": False,
+            "broker_used": False,
+            "binance_orders_sent": False,
+        },
+    }
+    print(json.dumps(payload, indent=2))
+
+
 def _evaluate_recommendations(args: argparse.Namespace) -> None:
-    recommendations, outcomes = RecommendationHistoryStore(args.input).load()
+    recommendations, outcomes, provenance, legacy = RecommendationHistoryStore(
+        args.input
+    ).load_with_provenance()
     payload = accuracy_report(recommendations, outcomes)
-    payload.update({"schema_version": "1.0", "input": str(args.input)})
+    payload.update(
+        {
+            "schema_version": "1.1",
+            "input": str(args.input),
+            "strict_oos": bool(provenance is not None and provenance.strict_oos),
+            "history_provenance": {
+                "legacy": legacy,
+                "evaluation_start": (
+                    provenance.evaluation_start.astimezone(UTC).isoformat().replace("+00:00", "Z")
+                    if provenance is not None and provenance.evaluation_start is not None
+                    else None
+                ),
+                "input_sha256": provenance.input_sha256 if provenance is not None else None,
+            },
+        }
+    )
     write_json_atomic(args.output, payload)
     print(json.dumps(payload, indent=2))
 
@@ -516,6 +640,8 @@ def main(argv: list[str] | None = None) -> int:
             _dry_run(args, settings)
         elif args.command == "recommend":
             _recommend(args, settings)
+        elif args.command == "backfill-recommendations":
+            _backfill_recommendations(args, settings)
         elif args.command == "evaluate-recommendations":
             _evaluate_recommendations(args)
         else:

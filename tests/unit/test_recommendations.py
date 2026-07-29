@@ -11,6 +11,7 @@ import pytest
 
 from trading_bot.cli import main
 from trading_bot.data.csv_store import write_candles_atomic
+from trading_bot.data.validation import CandleValidationError
 from trading_bot.domain.models import (
     Candle,
     Recommendation,
@@ -27,7 +28,10 @@ from trading_bot.recommendations.engine import (
     RecommendationEngine,
     RecommendationHistoryStore,
     accuracy_report,
+    backfill_recommendations,
     evaluate_outcomes,
+    merge_outcomes,
+    recommendation_json,
 )
 from trading_bot.settings import BotSettings
 
@@ -54,6 +58,41 @@ def candles(count: int = 210) -> list[Candle]:
     return [candle(index) for index in range(count)]
 
 
+def causal_backfill_reference(
+    engine: RecommendationEngine, items: list[Candle]
+) -> list[Recommendation]:
+    return [engine.recommend(items[: index + 1]).recommendation for index in range(len(items))]
+
+
+def real_candidate_candles() -> list[Candle]:
+    """Closed data with an actual EMA20/EMA50 cross and volume confirmation."""
+
+    result: list[Candle] = []
+    for index in range(270):
+        close = (
+            Decimal("120")
+            - Decimal(index) * Decimal("0.1")
+            + (Decimal("0.2") if index % 2 else Decimal("0"))
+            if index < 220
+            else Decimal("150") + (index - 220) * Decimal("3")
+        )
+        result.append(
+            Candle(
+                BASE + timedelta(hours=index),
+                BASE + timedelta(hours=index + 1),
+                "BTC/USDT",
+                "1h",
+                close,
+                close + Decimal("2"),
+                close - Decimal("2"),
+                close,
+                Decimal("5000") if index >= 220 else Decimal("1000"),
+                True,
+            )
+        )
+    return result
+
+
 def candidate_engine(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> RecommendationEngine:
     engine = RecommendationEngine(BotSettings(), **kwargs)
     monkeypatch.setattr(
@@ -74,6 +113,9 @@ def candidate_engine(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> Recom
 def recommendation(
     identifier: str, kind: RecommendationType = RecommendationType.BUY_BIAS
 ) -> Recommendation:
+    entry = None if kind == RecommendationType.AVOID else Decimal("100")
+    invalidation = None if kind == RecommendationType.AVOID else Decimal("95")
+    target = None if kind == RecommendationType.AVOID else Decimal("105")
     return Recommendation(
         identifier,
         BASE,
@@ -88,9 +130,9 @@ def recommendation(
         FEATURE_SCHEMA_VERSION,
         "test",
         "validated_closed_contiguous",
-        Decimal("100"),
-        Decimal("95"),
-        Decimal("105"),
+        entry,
+        invalidation,
+        target,
     )
 
 
@@ -340,3 +382,194 @@ def test_recommendation_module_has_no_broker_or_order_dependency() -> None:
 def test_live_mode_remains_locked() -> None:
     with pytest.raises(ValueError, match="live mode"):
         BotSettings(bot_mode="live")
+
+
+def test_resolved_outcome_is_not_downgraded_by_partial_csv(tmp_path: Path) -> None:
+    history = tmp_path / "history.json"
+    old = recommendation("old")
+    resolved = RecommendationOutcome(
+        old.id,
+        "1h",
+        candle(1).close_time,
+        Decimal("0.01"),
+        True,
+        False,
+        False,
+        RecommendationOutcomeStatus.RESOLVED,
+    )
+    RecommendationHistoryStore(history).save([old], [resolved])
+    partial = tmp_path / "partial.csv"
+    latest = tmp_path / "latest.json"
+    write_candles_atomic(partial, [candle(index) for index in range(300, 510)])
+
+    assert (
+        main(
+            [
+                "recommend",
+                "--input",
+                str(partial),
+                "--output",
+                str(latest),
+                "--history",
+                str(history),
+            ]
+        )
+        == 0
+    )
+    _, outcomes = RecommendationHistoryStore(history).load()
+    assert next(item for item in outcomes if item.recommendation_id == old.id) == resolved
+
+
+def test_outcome_merge_only_promotes_incomplete_outcome() -> None:
+    resolved = RecommendationOutcome(
+        "stable",
+        "1h",
+        BASE,
+        Decimal("0.01"),
+        True,
+        False,
+        False,
+        RecommendationOutcomeStatus.RESOLVED,
+    )
+    incomplete = RecommendationOutcome(
+        "stable",
+        "1h",
+        None,
+        None,
+        None,
+        None,
+        None,
+        RecommendationOutcomeStatus.INSUFFICIENT_FUTURE_DATA,
+    )
+    assert merge_outcomes([resolved], [incomplete]) == [resolved]
+
+
+def test_optimized_backfill_matches_unmocked_causal_reference() -> None:
+    items = real_candidate_candles()
+    reference = causal_backfill_reference(
+        RecommendationEngine(BotSettings(), now=lambda: BASE), items
+    )
+    optimized = backfill_recommendations(
+        RecommendationEngine(BotSettings(), now=lambda: BASE), items
+    )
+
+    assert optimized == reference
+    assert any(item.recommendation == RecommendationType.BUY_BIAS for item in optimized)
+    reference_outcomes = evaluate_outcomes(reference, items, BotSettings())
+    optimized_outcomes = evaluate_outcomes(optimized, items, BotSettings())
+    assert optimized_outcomes == reference_outcomes
+    assert accuracy_report(optimized, optimized_outcomes) == accuracy_report(
+        reference, reference_outcomes
+    )
+
+
+def test_backfill_is_causal_and_rejects_invalid_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = candles(212)
+    changed = original.copy()
+    changed[210] = candle(210, Decimal("999999"))
+    changed[211] = candle(211, Decimal("1"))
+    engine = candidate_engine(monkeypatch, now=lambda: BASE)
+    first = backfill_recommendations(engine, original)
+    second = backfill_recommendations(engine, changed)
+    assert first[209] == second[209]
+
+    open_items = candles()
+    open_items[-1] = candle(len(open_items) - 1, closed=False)
+    with pytest.raises(CandleValidationError, match="open candle"):
+        backfill_recommendations(candidate_engine(monkeypatch), open_items)
+
+
+def test_avoid_has_no_trade_levels(monkeypatch: pytest.MonkeyPatch) -> None:
+    class LowProbabilityModel:
+        model_version = "test-model"
+        feature_schema_version = FEATURE_SCHEMA_VERSION
+        production_eligible = True
+        live_trading_enabled = False
+
+        def probability_up(self, values: object) -> float:
+            del values
+            return 0.1
+
+    result = (
+        candidate_engine(monkeypatch, model=LowProbabilityModel())
+        .recommend(candles())
+        .recommendation
+    )
+    assert result.recommendation == RecommendationType.AVOID
+    assert result.entry_reference is None
+    assert result.target_price is None
+    assert result.invalidation_price is None
+    serialized = recommendation_json(result)
+    assert serialized["entry_reference"] is None
+
+
+def test_locked_oos_history_rejects_incompatible_reruns_without_mutation(tmp_path: Path) -> None:
+    input_path = tmp_path / "btc.csv"
+    history = tmp_path / "oos.json"
+    report = tmp_path / "accuracy.json"
+    items = real_candidate_candles()
+    boundary = items[220].close_time.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    write_candles_atomic(input_path, items)
+    command = [
+        "backfill-recommendations",
+        "--input",
+        str(input_path),
+        "--output",
+        str(history),
+        "--evaluation-start",
+        boundary,
+    ]
+
+    assert main(command) == 0
+    first_bytes = history.read_bytes()
+    records, _, provenance, legacy = RecommendationHistoryStore(history).load_with_provenance()
+    assert not legacy and provenance is not None and provenance.strict_oos
+    assert all(item.signal_candle_time >= items[220].close_time for item in records)
+    assert (
+        main(["backfill-recommendations", "--input", str(input_path), "--output", str(history)])
+        == 1
+    )
+    assert history.read_bytes() == first_bytes
+    assert main(command) == 0
+    assert history.read_bytes() == first_bytes
+    different = items[221].close_time.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    assert main(command[:-1] + [different]) == 1
+    assert history.read_bytes() == first_bytes
+    assert main(["evaluate-recommendations", "--input", str(history), "--output", str(report)]) == 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["strict_oos"] is True
+    assert payload["history_provenance"]["evaluation_start"] == boundary
+
+
+def test_legacy_history_cannot_be_adopted_as_strict_oos(tmp_path: Path) -> None:
+    input_path = tmp_path / "btc.csv"
+    history = tmp_path / "legacy.json"
+    items = candles()
+    write_candles_atomic(input_path, items)
+    history.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "recommendations": [recommendation_json(recommendation("legacy"))],
+                "outcomes": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = history.read_bytes()
+    boundary = items[-1].close_time.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    assert (
+        main(
+            [
+                "backfill-recommendations",
+                "--input",
+                str(input_path),
+                "--output",
+                str(history),
+                "--evaluation-start",
+                boundary,
+            ]
+        )
+        == 1
+    )
+    assert history.read_bytes() == before
