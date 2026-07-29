@@ -370,6 +370,24 @@ def merge_outcomes(
     )
 
 
+def validate_strict_oos_history(
+    recommendations: Iterable[Recommendation],
+    provenance: RecommendationHistoryProvenance | None,
+) -> None:
+    """Reject a strict history whose records cannot be OOS evidence."""
+
+    if provenance is None or not provenance.strict_oos:
+        return
+    boundary = provenance.evaluation_start
+    if boundary is None:
+        raise RecommendationError("strict OOS history provenance is incomplete")
+    for recommendation in recommendations:
+        if recommendation.symbol != "BTC/USDT" or recommendation.timeframe != "1h":
+            raise RecommendationError("strict OOS history recommendation market is invalid")
+        if recommendation.signal_candle_time < boundary:
+            raise RecommendationError("strict OOS history contains pre-boundary recommendations")
+
+
 def backfill_recommendations(
     engine: RecommendationEngine, candles: Sequence[Candle]
 ) -> list[Recommendation]:
@@ -666,7 +684,18 @@ def _provenance_json(provenance: RecommendationHistoryProvenance) -> dict[str, A
 
 
 def _provenance_from_json(value: object) -> RecommendationHistoryProvenance:
-    if not isinstance(value, dict) or not isinstance(value.get("strict_oos"), bool):
+    expected_fields = {
+        "strict_oos",
+        "evaluation_start",
+        "input_sha256",
+        "input_first_close",
+        "input_last_close",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected_fields
+        or not isinstance(value.get("strict_oos"), bool)
+    ):
         raise RecommendationError("recommendation history provenance is invalid")
     strict_oos = value["strict_oos"]
     evaluation_start = value.get("evaluation_start")
@@ -674,7 +703,11 @@ def _provenance_from_json(value: object) -> RecommendationHistoryProvenance:
     first_close = value.get("input_first_close")
     last_close = value.get("input_last_close")
     if strict_oos:
-        if not isinstance(input_sha256, str):
+        if (
+            not isinstance(input_sha256, str)
+            or len(input_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in input_sha256)
+        ):
             raise RecommendationError("strict OOS history input checksum is invalid")
         if evaluation_start is None or first_close is None or last_close is None:
             raise RecommendationError("strict OOS history provenance is incomplete")
@@ -686,10 +719,27 @@ def _provenance_from_json(value: object) -> RecommendationHistoryProvenance:
     ):
         if item is not None and not isinstance(item, str):
             raise RecommendationError(f"history provenance {field} is invalid")
+    parsed_boundary = (
+        _parse_utc(evaluation_start, "evaluation_start") if evaluation_start is not None else None
+    )
+    parsed_first_close = (
+        _parse_utc(first_close, "input_first_close") if first_close is not None else None
+    )
+    parsed_last_close = (
+        _parse_utc(last_close, "input_last_close") if last_close is not None else None
+    )
+    if strict_oos and (
+        parsed_boundary is None
+        or parsed_first_close is None
+        or parsed_last_close is None
+        or parsed_first_close > parsed_last_close
+        or not parsed_first_close <= parsed_boundary <= parsed_last_close
+    ):
+        raise RecommendationError("strict OOS history provenance is inconsistent")
     return RecommendationHistoryProvenance(
         strict_oos,
-        _parse_utc(evaluation_start, "evaluation_start") if evaluation_start is not None else None,
+        parsed_boundary,
         input_sha256,
-        _parse_utc(first_close, "input_first_close") if first_close is not None else None,
-        _parse_utc(last_close, "input_last_close") if last_close is not None else None,
+        parsed_first_close,
+        parsed_last_close,
     )

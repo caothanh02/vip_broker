@@ -49,6 +49,7 @@ from trading_bot.recommendations.engine import (
     merge_recommendations,
     outcome_json,
     recommendation_json,
+    validate_strict_oos_history,
 )
 from trading_bot.runtime.dry_run import (
     DryRunEngine,
@@ -554,7 +555,13 @@ def _backfill_recommendations(args: argparse.Namespace, settings: BotSettings) -
     store = RecommendationHistoryStore(args.output)
     existing, existing_outcomes, persisted_provenance, legacy = store.load_with_provenance()
     requested_provenance = _backfill_provenance(args, candles)
-    if existing or existing_outcomes:
+    if persisted_provenance is not None and persisted_provenance.strict_oos:
+        if args.evaluation_start is None:
+            raise RecommendationError("strict OOS history requires --evaluation-start")
+        if persisted_provenance != requested_provenance:
+            raise RecommendationError("history provenance is locked; use a new output path")
+        validate_strict_oos_history(existing, persisted_provenance)
+    elif existing or existing_outcomes:
         if legacy and args.evaluation_start is not None:
             raise RecommendationError("legacy history cannot be used as strict OOS evidence")
         if persisted_provenance is not None and persisted_provenance != requested_provenance:
@@ -600,6 +607,7 @@ def _evaluate_recommendations(args: argparse.Namespace) -> None:
     recommendations, outcomes, provenance, legacy = RecommendationHistoryStore(
         args.input
     ).load_with_provenance()
+    validate_strict_oos_history(recommendations, provenance)
     payload = accuracy_report(recommendations, outcomes)
     payload.update(
         {
@@ -614,6 +622,16 @@ def _evaluate_recommendations(args: argparse.Namespace) -> None:
                     else None
                 ),
                 "input_sha256": provenance.input_sha256 if provenance is not None else None,
+                "input_first_close": (
+                    provenance.input_first_close.astimezone(UTC).isoformat().replace("+00:00", "Z")
+                    if provenance is not None and provenance.input_first_close is not None
+                    else None
+                ),
+                "input_last_close": (
+                    provenance.input_last_close.astimezone(UTC).isoformat().replace("+00:00", "Z")
+                    if provenance is not None and provenance.input_last_close is not None
+                    else None
+                ),
             },
         }
     )

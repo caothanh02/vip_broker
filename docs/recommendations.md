@@ -23,7 +23,8 @@ history is created. It computes trailing features once and exposes only each dec
 its predecessor to the rule. For strict OOS reports, provide `--evaluation-start` as an explicit
 UTC close-candle timestamp. The history stores and locks its boundary plus input checksum; reruns
 without the same boundary and input fail before modifying the history. Legacy v1 histories cannot
-be adopted as strict OOS evidence: create a new output history instead.
+be adopted as strict OOS evidence: create a new output history instead. Strict accuracy reports
+repeat the boundary, input SHA-256, and first/last input close timestamps for audit.
 
 Outcomes are evaluated only after 1h, 4h, or 24h of future closed candles exist. Realized returns
 deduct the configured entry/exit fee and slippage model. `BUY_BIAS` is directionally correct only

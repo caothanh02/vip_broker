@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 from dataclasses import replace
@@ -26,6 +27,7 @@ from trading_bot.recommendations import engine as recommendation_module
 from trading_bot.recommendations.engine import (
     HORIZONS,
     RecommendationEngine,
+    RecommendationHistoryProvenance,
     RecommendationHistoryStore,
     accuracy_report,
     backfill_recommendations,
@@ -91,6 +93,18 @@ def real_candidate_candles() -> list[Candle]:
             )
         )
     return result
+
+
+def strict_provenance(
+    input_path: Path, items: list[Candle], boundary: datetime
+) -> RecommendationHistoryProvenance:
+    return RecommendationHistoryProvenance(
+        True,
+        boundary,
+        hashlib.sha256(input_path.read_bytes()).hexdigest(),
+        items[0].close_time,
+        items[-1].close_time,
+    )
 
 
 def candidate_engine(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> RecommendationEngine:
@@ -467,7 +481,7 @@ def test_backfill_is_causal_and_rejects_invalid_input(monkeypatch: pytest.Monkey
     original = candles(212)
     changed = original.copy()
     changed[210] = candle(210, Decimal("999999"))
-    changed[211] = candle(211, Decimal("1"))
+    changed[211] = candle(211, Decimal("10"))
     engine = candidate_engine(monkeypatch, now=lambda: BASE)
     first = backfill_recommendations(engine, original)
     second = backfill_recommendations(engine, changed)
@@ -539,6 +553,118 @@ def test_locked_oos_history_rejects_incompatible_reruns_without_mutation(tmp_pat
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["strict_oos"] is True
     assert payload["history_provenance"]["evaluation_start"] == boundary
+    assert payload["history_provenance"]["input_sha256"] is not None
+    assert payload["history_provenance"]["input_first_close"] == "2024-01-01T01:00:00Z"
+    assert payload["history_provenance"]["input_last_close"] == "2024-01-12T06:00:00Z"
+
+
+def test_empty_strict_oos_history_lock_rejects_incompatible_reruns_without_mutation(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "btc.csv"
+    changed_input = tmp_path / "changed.csv"
+    history = tmp_path / "empty_oos.json"
+    items = candles()
+    boundary = items[200].close_time
+    write_candles_atomic(input_path, items)
+    RecommendationHistoryStore(history).save([], [], strict_provenance(input_path, items, boundary))
+    original = history.read_bytes()
+
+    assert (
+        main(["backfill-recommendations", "--input", str(input_path), "--output", str(history)])
+        == 1
+    )
+    assert history.read_bytes() == original
+    changed_boundary = items[201].close_time.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    assert (
+        main(
+            [
+                "backfill-recommendations",
+                "--input",
+                str(input_path),
+                "--output",
+                str(history),
+                "--evaluation-start",
+                changed_boundary,
+            ]
+        )
+        == 1
+    )
+    assert history.read_bytes() == original
+
+    changed = items.copy()
+    last = changed[-1]
+    changed[-1] = Candle(
+        last.open_time,
+        last.close_time,
+        last.symbol,
+        last.timeframe,
+        last.open,
+        last.high,
+        last.low,
+        last.close + Decimal("1"),
+        last.volume,
+        last.is_closed,
+    )
+    write_candles_atomic(changed_input, changed)
+    assert (
+        main(
+            [
+                "backfill-recommendations",
+                "--input",
+                str(changed_input),
+                "--output",
+                str(history),
+                "--evaluation-start",
+                boundary.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            ]
+        )
+        == 1
+    )
+    assert history.read_bytes() == original
+
+
+def test_evaluate_rejects_pre_boundary_strict_oos_history_without_writing_report(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "btc.csv"
+    history = tmp_path / "oos.json"
+    report = tmp_path / "accuracy.json"
+    items = candles()
+    write_candles_atomic(input_path, items)
+    RecommendationHistoryStore(history).save(
+        [recommendation("pre-boundary")],
+        [],
+        strict_provenance(input_path, items, items[200].close_time),
+    )
+    report.write_text("preserve-this-report", encoding="utf-8")
+    original = report.read_bytes()
+
+    assert main(["evaluate-recommendations", "--input", str(history), "--output", str(report)]) == 1
+    assert report.read_bytes() == original
+
+
+def test_evaluate_valid_strict_oos_history_includes_full_provenance(tmp_path: Path) -> None:
+    input_path = tmp_path / "btc.csv"
+    history = tmp_path / "oos.json"
+    report = tmp_path / "accuracy.json"
+    items = candles()
+    boundary = items[200].close_time
+    write_candles_atomic(input_path, items)
+    strict = strict_provenance(input_path, items, boundary)
+    valid = replace(recommendation("in-boundary"), signal_candle_time=boundary)
+    RecommendationHistoryStore(history).save([valid], [], strict)
+
+    assert main(["evaluate-recommendations", "--input", str(history), "--output", str(report)]) == 0
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["strict_oos"] is True
+    assert payload["history_provenance"] == {
+        "legacy": False,
+        "evaluation_start": "2024-01-09T09:00:00Z",
+        "input_sha256": strict.input_sha256,
+        "input_first_close": "2024-01-01T01:00:00Z",
+        "input_last_close": "2024-01-09T18:00:00Z",
+    }
 
 
 def test_legacy_history_cannot_be_adopted_as_strict_oos(tmp_path: Path) -> None:
