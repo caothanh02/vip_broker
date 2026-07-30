@@ -684,6 +684,7 @@ def accuracy_report(
             "brier_score": brier,
             "calibration": calibration,
             "sample_size": sample,
+            "statistical_gate_passed": statistical_gate_passed,
             "statistical_result": {
                 "minimum_applicable_resolved_samples": _MIN_RESEARCH_CLAIM_SAMPLES,
                 "applicable_resolved_samples": sample,

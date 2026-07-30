@@ -368,7 +368,7 @@ def test_non_strict_development_history_cannot_make_a_research_claim() -> None:
     report = accuracy_report(records, outcomes)
 
     assert report["horizons"]["1h"]["inconclusive"] is False
-    assert report["horizons"]["1h"]["statistical_result"]["passed"] is True
+    assert report["horizons"]["1h"]["statistical_gate_passed"] is True
     assert report["horizons"]["1h"]["research_claim_eligible"] is False
     assert report["horizons"]["1h"]["research_claim_eligibility_reason"] == (
         "strict_oos_provenance_required"
@@ -383,7 +383,7 @@ def test_strict_oos_research_claim_requires_exact_lower_bound_above_chance() -> 
     report = accuracy_report(records, outcomes, strict_oos_provenance_for_records())
 
     assert report["strict_oos"] is True
-    assert all(item["statistical_result"]["passed"] for item in report["horizons"].values())
+    assert all(item["statistical_gate_passed"] for item in report["horizons"].values())
     assert all(item["research_claim_eligible"] for item in report["horizons"].values())
     assert report["research_claim_eligible"] is True
 
@@ -399,7 +399,7 @@ def test_exact_60_of_100_lower_bound_rejects_strict_oos_claim() -> None:
     assert metrics["statistical_result"]["two_sided_95_percent_exact_lower_bound"] == pytest.approx(
         0.4972, abs=0.0002
     )
-    assert metrics["statistical_result"]["passed"] is False
+    assert metrics["statistical_gate_passed"] is False
     assert metrics["research_claim_eligible"] is False
     assert report["research_claim_eligible"] is False
 
@@ -416,7 +416,7 @@ def test_exact_binomial_lower_bound_handles_edge_cases() -> None:
         resolved_outcomes_by_horizon([single_record], 1),
         strict_oos_provenance_for_records(),
     )
-    assert single["horizons"]["1h"]["statistical_result"]["passed"] is False
+    assert single["horizons"]["1h"]["statistical_gate_passed"] is False
     assert single["research_claim_eligible"] is False
 
 
@@ -432,7 +432,7 @@ def test_evaluate_non_strict_history_reports_statistical_result_without_oos_clai
 
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["strict_oos"] is False
-    assert payload["horizons"]["1h"]["statistical_result"]["passed"] is True
+    assert payload["horizons"]["1h"]["statistical_gate_passed"] is True
     assert payload["horizons"]["1h"]["research_claim_eligible"] is False
     assert payload["research_claim_eligibility_reason"] == "strict_oos_provenance_required"
 
