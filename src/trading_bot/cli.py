@@ -619,7 +619,7 @@ def _evaluate_recommendations(args: argparse.Namespace) -> None:
     payload = accuracy_report(recommendations, outcomes, provenance)
     payload.update(
         {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "input": str(args.input),
             "strict_oos": bool(provenance is not None and provenance.strict_oos),
             "history_provenance": {

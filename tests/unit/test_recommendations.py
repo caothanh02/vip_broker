@@ -863,6 +863,7 @@ def test_evaluate_valid_strict_oos_history_includes_full_provenance(tmp_path: Pa
 
     assert main(["evaluate-recommendations", "--input", str(history), "--output", str(report)]) == 0
     payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "1.2"
     assert payload["strict_oos"] is True
     assert payload["history_provenance"] == {
         "legacy": False,

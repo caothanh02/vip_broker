@@ -60,5 +60,6 @@ If these gates are not met, retain `NEUTRAL` as the safe default and label the o
 
 Persist all research outputs outside Git. A report must identify the code commit, verified dataset
 checksum/range, strict-OOS provenance, recommendation counts, coverage, applicable sample count,
-confidence interval, and configured cost model. No raw market data, models, reports, caches, or
-credentials may be committed.
+confidence interval, and configured cost model. Evaluation report schema `1.2` uses the exact
+Clopper--Pearson lower bound and records the independent statistical and strict-OOS claim gates.
+No raw market data, models, reports, caches, or credentials may be committed.

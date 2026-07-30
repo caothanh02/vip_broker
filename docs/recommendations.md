@@ -47,6 +47,10 @@ validated strict OOS history. Development, legacy, and non-strict histories alwa
 `research_claim_eligible: false`, even when their statistical result passes. A technical
 `inconclusive: false` alone is never an OOS performance claim.
 
+Evaluation report schema `1.2` records `statistical_gate_passed`, the two-sided 95% exact
+Clopper--Pearson lower bound, strict-OOS validation, and final claim eligibility. This changes the
+evaluation report only; persisted recommendation history remains schema `1.1`.
+
 ```powershell
 uv run trading-bot recommend --input data/raw/btcusdt_1h.csv --output reports/recommendations/latest.json
 uv run trading-bot backfill-recommendations --input data/raw/btcusdt_1h.csv --output reports/recommendations/history.json
