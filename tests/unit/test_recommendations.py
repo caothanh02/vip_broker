@@ -310,6 +310,31 @@ def test_accuracy_metrics_include_buy_avoid_neutral_and_inconclusive() -> None:
     assert metrics["brier_score"] is None
     assert metrics["calibration"] is None
     assert metrics["inconclusive"] is True
+    assert metrics["research_claim_eligible"] is False
+
+
+def test_research_claim_requires_100_samples_and_confidence_lower_bound_above_chance() -> None:
+    records = [recommendation(f"candidate-{index}") for index in range(100)]
+    outcomes = [
+        RecommendationOutcome(
+            record.id,
+            "1h",
+            BASE,
+            Decimal("0.01"),
+            index < 60,
+            False,
+            False,
+            RecommendationOutcomeStatus.RESOLVED,
+        )
+        for index, record in enumerate(records)
+    ]
+
+    report = accuracy_report(records, outcomes)
+
+    assert report["horizons"]["1h"]["inconclusive"] is False
+    assert report["horizons"]["1h"]["research_claim_eligible"] is True
+    assert report["horizons"]["4h"]["research_claim_eligible"] is False
+    assert report["research_claim_eligible"] is False
 
 
 def test_accuracy_reports_brier_and_calibration_only_for_ml_probabilities() -> None:
@@ -491,6 +516,51 @@ def test_backfill_is_causal_and_rejects_invalid_input(monkeypatch: pytest.Monkey
     open_items[-1] = candle(len(open_items) - 1, closed=False)
     with pytest.raises(CandleValidationError, match="open candle"):
         backfill_recommendations(candidate_engine(monkeypatch), open_items)
+
+
+def test_backfill_resets_features_after_verified_market_interruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = candles(430)
+    missing = original[210].open_time
+    interrupted = original[:210] + original[211:]
+    engine = candidate_engine(monkeypatch, now=lambda: BASE)
+
+    actual = backfill_recommendations(engine, interrupted, {missing})
+    expected = causal_backfill_reference(
+        candidate_engine(monkeypatch, now=lambda: BASE), original[:210]
+    ) + causal_backfill_reference(candidate_engine(monkeypatch, now=lambda: BASE), original[211:])
+
+    assert actual == expected
+    first_after_gap = next(
+        item for item in actual if item.signal_candle_time == original[211].close_time
+    )
+    assert first_after_gap.rule_reason == "insufficient_feature_history"
+    assert actual[-1].recommendation == RecommendationType.BUY_BIAS
+
+
+def test_backfill_rejects_unverified_market_interruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = candles(220)
+    interrupted = original[:100] + original[101:]
+
+    with pytest.raises(CandleValidationError, match="data gap or bad interval"):
+        backfill_recommendations(candidate_engine(monkeypatch), interrupted)
+
+
+def test_outcomes_do_not_cross_verified_market_interruption() -> None:
+    original = candles(30)
+    missing = original[10].open_time
+    interrupted = original[:10] + original[11:]
+    before_gap = replace(recommendation("before-gap"), signal_candle_time=original[9].close_time)
+
+    outcomes = evaluate_outcomes([before_gap], interrupted, BotSettings(), {missing})
+
+    assert all(
+        item.status == RecommendationOutcomeStatus.INSUFFICIENT_FUTURE_DATA for item in outcomes
+    )
+    assert all(item.resolved_at is None for item in outcomes)
 
 
 def test_avoid_has_no_trade_levels(monkeypatch: pytest.MonkeyPatch) -> None:

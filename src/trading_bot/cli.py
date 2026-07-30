@@ -486,9 +486,11 @@ def _dry_run(args: argparse.Namespace, settings: BotSettings) -> None:
 
 
 def _recommend(args: argparse.Namespace, settings: BotSettings) -> None:
-    candles = read_candles(args.input)
-    validate_candles(candles)
-    report = RecommendationEngine(settings).recommend(candles)
+    metadata_verified = verify_metadata_checksum(args.input)
+    missing = verified_missing_open_times(args.input) if metadata_verified else set()
+    candles = read_candles(args.input, allowed_missing_open_times=missing)
+    validate_candles(candles, allowed_missing_open_times=missing)
+    report = RecommendationEngine(settings).recommend(candles, missing)
     history_path = args.history or args.output.with_name("history.json")
     store = RecommendationHistoryStore(history_path)
     existing, existing_outcomes, provenance, _ = store.load_with_provenance()
@@ -499,7 +501,9 @@ def _recommend(args: argparse.Namespace, settings: BotSettings) -> None:
     resolvable = [
         item for item in recommendations if item.signal_candle_time in available_close_times
     ]
-    outcomes = merge_outcomes(existing_outcomes, evaluate_outcomes(resolvable, candles, settings))
+    outcomes = merge_outcomes(
+        existing_outcomes, evaluate_outcomes(resolvable, candles, settings, missing)
+    )
     store.save(recommendations, outcomes, RecommendationHistoryProvenance(False))
     payload = {
         "schema_version": "1.0",
@@ -546,8 +550,10 @@ def _backfill_provenance(
 
 
 def _backfill_recommendations(args: argparse.Namespace, settings: BotSettings) -> None:
-    candles = read_candles(args.input)
-    validate_candles(candles)
+    metadata_verified = verify_metadata_checksum(args.input)
+    missing = verified_missing_open_times(args.input) if metadata_verified else set()
+    candles = read_candles(args.input, allowed_missing_open_times=missing)
+    validate_candles(candles, allowed_missing_open_times=missing)
     if args.evaluation_start is not None and args.evaluation_start not in {
         candle.close_time for candle in candles
     }:
@@ -568,7 +574,7 @@ def _backfill_recommendations(args: argparse.Namespace, settings: BotSettings) -
             raise RecommendationError("history provenance is locked; use a new output path")
     elif legacy and args.evaluation_start is not None:
         raise RecommendationError("legacy history cannot be used as strict OOS evidence")
-    generated = backfill_recommendations(RecommendationEngine(settings), candles)
+    generated = backfill_recommendations(RecommendationEngine(settings), candles, missing)
     if args.evaluation_start is not None:
         generated = [item for item in generated if item.signal_candle_time >= args.evaluation_start]
     recommendations = merge_recommendations(existing, generated)
@@ -576,7 +582,9 @@ def _backfill_recommendations(args: argparse.Namespace, settings: BotSettings) -
     resolvable = [
         item for item in recommendations if item.signal_candle_time in available_close_times
     ]
-    outcomes = merge_outcomes(existing_outcomes, evaluate_outcomes(resolvable, candles, settings))
+    outcomes = merge_outcomes(
+        existing_outcomes, evaluate_outcomes(resolvable, candles, settings, missing)
+    )
     store.save(recommendations, outcomes, requested_provenance)
     payload = {
         "schema_version": "1.1",
