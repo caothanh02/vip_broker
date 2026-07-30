@@ -150,6 +150,54 @@ def recommendation(
     )
 
 
+def strict_oos_provenance_for_records() -> RecommendationHistoryProvenance:
+    return RecommendationHistoryProvenance(
+        True,
+        BASE,
+        "a" * 64,
+        BASE,
+        BASE + timedelta(days=10),
+    )
+
+
+def resolved_outcomes_by_horizon(
+    records: list[Recommendation], correct_count: int
+) -> list[RecommendationOutcome]:
+    return [
+        RecommendationOutcome(
+            record.id,
+            horizon,
+            BASE,
+            Decimal("0.01"),
+            index < correct_count,
+            False,
+            False,
+            RecommendationOutcomeStatus.RESOLVED,
+        )
+        for horizon in HORIZONS
+        for index, record in enumerate(records)
+    ]
+
+
+def shifted_candles(items: list[Candle], start: datetime) -> list[Candle]:
+    offset = start - items[0].open_time
+    return [
+        Candle(
+            item.open_time + offset,
+            item.close_time + offset,
+            item.symbol,
+            item.timeframe,
+            item.open,
+            item.high,
+            item.low,
+            item.close,
+            item.volume,
+            item.is_closed,
+        )
+        for item in items
+    ]
+
+
 def test_recommendation_requires_closed_contiguous_candles(monkeypatch: pytest.MonkeyPatch) -> None:
     items = candles()
     items[-1] = candle(len(items) - 1, closed=False)
@@ -313,28 +361,80 @@ def test_accuracy_metrics_include_buy_avoid_neutral_and_inconclusive() -> None:
     assert metrics["research_claim_eligible"] is False
 
 
-def test_research_claim_requires_100_samples_and_confidence_lower_bound_above_chance() -> None:
+def test_non_strict_development_history_cannot_make_a_research_claim() -> None:
     records = [recommendation(f"candidate-{index}") for index in range(100)]
-    outcomes = [
-        RecommendationOutcome(
-            record.id,
-            "1h",
-            BASE,
-            Decimal("0.01"),
-            index < 60,
-            False,
-            False,
-            RecommendationOutcomeStatus.RESOLVED,
-        )
-        for index, record in enumerate(records)
-    ]
+    outcomes = resolved_outcomes_by_horizon(records, 100)
 
     report = accuracy_report(records, outcomes)
 
     assert report["horizons"]["1h"]["inconclusive"] is False
-    assert report["horizons"]["1h"]["research_claim_eligible"] is True
-    assert report["horizons"]["4h"]["research_claim_eligible"] is False
+    assert report["horizons"]["1h"]["statistical_gate_passed"] is True
+    assert report["horizons"]["1h"]["research_claim_eligible"] is False
+    assert report["horizons"]["1h"]["research_claim_eligibility_reason"] == (
+        "strict_oos_provenance_required"
+    )
     assert report["research_claim_eligible"] is False
+
+
+def test_strict_oos_research_claim_requires_exact_lower_bound_above_chance() -> None:
+    records = [recommendation(f"candidate-{index}") for index in range(100)]
+    outcomes = resolved_outcomes_by_horizon(records, 100)
+
+    report = accuracy_report(records, outcomes, strict_oos_provenance_for_records())
+
+    assert report["strict_oos"] is True
+    assert all(item["statistical_gate_passed"] for item in report["horizons"].values())
+    assert all(item["research_claim_eligible"] for item in report["horizons"].values())
+    assert report["research_claim_eligible"] is True
+
+
+def test_exact_60_of_100_lower_bound_rejects_strict_oos_claim() -> None:
+    records = [recommendation(f"candidate-{index}") for index in range(100)]
+    outcomes = resolved_outcomes_by_horizon(records, 60)
+
+    report = accuracy_report(records, outcomes, strict_oos_provenance_for_records())
+    metrics = report["horizons"]["1h"]
+
+    assert metrics["directional_accuracy"] == pytest.approx(0.6)
+    assert metrics["statistical_result"]["two_sided_95_percent_exact_lower_bound"] == pytest.approx(
+        0.4972, abs=0.0002
+    )
+    assert metrics["statistical_gate_passed"] is False
+    assert metrics["research_claim_eligible"] is False
+    assert report["research_claim_eligible"] is False
+
+
+def test_exact_binomial_lower_bound_handles_edge_cases() -> None:
+    assert recommendation_module._clopper_pearson_lower_bound(0, 100) == 0.0
+    assert recommendation_module._clopper_pearson_lower_bound(100, 100) > 0.5
+    assert recommendation_module._clopper_pearson_lower_bound(1, 1) == pytest.approx(0.025)
+    assert recommendation_module._clopper_pearson_lower_bound(0, 0) is None
+
+    single_record = recommendation("single")
+    single = accuracy_report(
+        [single_record],
+        resolved_outcomes_by_horizon([single_record], 1),
+        strict_oos_provenance_for_records(),
+    )
+    assert single["horizons"]["1h"]["statistical_gate_passed"] is False
+    assert single["research_claim_eligible"] is False
+
+
+def test_evaluate_non_strict_history_reports_statistical_result_without_oos_claim(
+    tmp_path: Path,
+) -> None:
+    history = tmp_path / "development.json"
+    report = tmp_path / "accuracy.json"
+    records = [recommendation(f"candidate-{index}") for index in range(100)]
+    RecommendationHistoryStore(history).save(records, resolved_outcomes_by_horizon(records, 100))
+
+    assert main(["evaluate-recommendations", "--input", str(history), "--output", str(report)]) == 0
+
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["strict_oos"] is False
+    assert payload["horizons"]["1h"]["statistical_gate_passed"] is True
+    assert payload["horizons"]["1h"]["research_claim_eligible"] is False
+    assert payload["research_claim_eligibility_reason"] == "strict_oos_provenance_required"
 
 
 def test_accuracy_reports_brier_and_calibration_only_for_ml_probabilities() -> None:
@@ -539,6 +639,42 @@ def test_backfill_resets_features_after_verified_market_interruption(
     assert actual[-1].recommendation == RecommendationType.BUY_BIAS
 
 
+def test_real_strategy_resets_features_and_outcomes_at_verified_interruption() -> None:
+    source = real_candidate_candles()
+    baseline = backfill_recommendations(
+        RecommendationEngine(BotSettings(), now=lambda: BASE), source
+    )
+    candidate = next(
+        item for item in baseline if item.recommendation == RecommendationType.BUY_BIAS
+    )
+    candidate_index = next(
+        index
+        for index, item in enumerate(source)
+        if item.close_time == candidate.signal_candle_time
+    )
+    missing = source[candidate_index + 1].open_time
+    before_gap = source[: candidate_index + 1]
+    after_gap = shifted_candles(source, source[candidate_index + 2].open_time)
+    interrupted = before_gap + after_gap
+
+    actual = backfill_recommendations(
+        RecommendationEngine(BotSettings(), now=lambda: BASE), interrupted, {missing}
+    )
+    expected = causal_backfill_reference(
+        RecommendationEngine(BotSettings(), now=lambda: BASE), before_gap
+    ) + causal_backfill_reference(RecommendationEngine(BotSettings(), now=lambda: BASE), after_gap)
+
+    assert actual == expected
+    assert actual[len(before_gap)].rule_reason == "insufficient_feature_history"
+    before_gap_candidate = next(
+        item for item in actual if item.signal_candle_time == candidate.signal_candle_time
+    )
+    outcomes = evaluate_outcomes([before_gap_candidate], interrupted, BotSettings(), {missing})
+    assert all(
+        item.status == RecommendationOutcomeStatus.INSUFFICIENT_FUTURE_DATA for item in outcomes
+    )
+
+
 def test_backfill_rejects_unverified_market_interruption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -727,6 +863,7 @@ def test_evaluate_valid_strict_oos_history_includes_full_provenance(tmp_path: Pa
 
     assert main(["evaluate-recommendations", "--input", str(history), "--output", str(report)]) == 0
     payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "1.2"
     assert payload["strict_oos"] is True
     assert payload["history_provenance"] == {
         "legacy": False,

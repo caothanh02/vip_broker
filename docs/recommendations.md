@@ -41,8 +41,15 @@ Accuracy reports include coverage, directional accuracy, BUY_BIAS/AVOID precisio
 and Brier score only when real ML probabilities exist. Reports with fewer than 30 applicable
 resolved recommendations are labelled `inconclusive`; they must not be presented as a reliable
 out-of-sample accuracy claim. `research_claim_eligible` is a separate, stricter protocol gate:
-every horizon needs at least 100 applicable resolved recommendations and a 95% confidence lower
-bound above 50%. A technical `inconclusive: false` alone is never an OOS performance claim.
+every horizon needs at least 100 applicable resolved recommendations and a two-sided 95% exact
+Clopper--Pearson confidence lower bound above 50%. The history must also be a checksum-locked,
+validated strict OOS history. Development, legacy, and non-strict histories always report
+`research_claim_eligible: false`, even when their statistical result passes. A technical
+`inconclusive: false` alone is never an OOS performance claim.
+
+Evaluation report schema `1.2` records `statistical_gate_passed`, the two-sided 95% exact
+Clopper--Pearson lower bound, strict-OOS validation, and final claim eligibility. This changes the
+evaluation report only; persisted recommendation history remains schema `1.1`.
 
 ```powershell
 uv run trading-bot recommend --input data/raw/btcusdt_1h.csv --output reports/recommendations/latest.json
