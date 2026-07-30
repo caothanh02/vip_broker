@@ -49,7 +49,8 @@ among non-NEUTRAL recommendations; it is not PnL, expected return, or investment
 A candidate is not eligible for an OOS claim unless each reported horizon has:
 
 - at least 100 applicable, resolved recommendations;
-- a two-sided 95% confidence interval whose lower bound is above 50%; and
+- a two-sided 95% exact Clopper--Pearson confidence interval whose lower bound is above 50%;
+- checksum-locked strict OOS provenance that passes history validation; and
 - fixed fees/slippage and unchanged decision logic from the selected development experiment.
 
 If these gates are not met, retain `NEUTRAL` as the safe default and label the output

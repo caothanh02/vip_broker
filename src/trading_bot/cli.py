@@ -616,7 +616,7 @@ def _evaluate_recommendations(args: argparse.Namespace) -> None:
         args.input
     ).load_with_provenance()
     validate_strict_oos_history(recommendations, provenance)
-    payload = accuracy_report(recommendations, outcomes)
+    payload = accuracy_report(recommendations, outcomes, provenance)
     payload.update(
         {
             "schema_version": "1.1",

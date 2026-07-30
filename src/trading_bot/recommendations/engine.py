@@ -32,6 +32,11 @@ _HORIZON_CANDLES = {"1h": 1, "4h": 4, "24h": 24}
 _RULE_CONFIDENCE = 0.55
 _MIN_CONCLUSIVE_SAMPLES = 30
 _MIN_RESEARCH_CLAIM_SAMPLES = 100
+_RESEARCH_CLAIM_CONFIDENCE = 0.95
+_RESEARCH_CLAIM_CHANCE_THRESHOLD = 0.5
+_BETA_FRACTION_MAX_ITERATIONS = 200
+_BETA_FRACTION_EPSILON = 3.0e-14
+_BETA_FRACTION_MINIMUM = 1.0e-300
 
 
 class RecommendationError(ValueError):
@@ -424,13 +429,131 @@ def validate_strict_oos_history(
     if provenance is None or not provenance.strict_oos:
         return
     boundary = provenance.evaluation_start
-    if boundary is None:
+    first_close = provenance.input_first_close
+    last_close = provenance.input_last_close
+    checksum = provenance.input_sha256
+    if (
+        not isinstance(checksum, str)
+        or len(checksum) != 64
+        or any(character not in "0123456789abcdef" for character in checksum)
+        or first_close is None
+        or last_close is None
+        or boundary is None
+    ):
         raise RecommendationError("strict OOS history provenance is incomplete")
+    if (
+        any(
+            timestamp.tzinfo is None or timestamp.utcoffset() != timedelta(0)
+            for timestamp in (boundary, first_close, last_close)
+        )
+        or not first_close <= boundary <= last_close
+    ):
+        raise RecommendationError("strict OOS history provenance is inconsistent")
     for recommendation in recommendations:
         if recommendation.symbol != "BTC/USDT" or recommendation.timeframe != "1h":
             raise RecommendationError("strict OOS history recommendation market is invalid")
         if recommendation.signal_candle_time < boundary:
             raise RecommendationError("strict OOS history contains pre-boundary recommendations")
+
+
+def _beta_continued_fraction(alpha: float, beta: float, value: float) -> float:
+    """Evaluate the continued fraction used by the regularized beta function."""
+
+    alpha_plus_beta = alpha + beta
+    alpha_plus_one = alpha + 1.0
+    alpha_minus_one = alpha - 1.0
+    denominator = 1.0 - alpha_plus_beta * value / alpha_plus_one
+    if abs(denominator) < _BETA_FRACTION_MINIMUM:
+        denominator = _BETA_FRACTION_MINIMUM
+    denominator = 1.0 / denominator
+    numerator_factor = 1.0
+    fraction = denominator
+    for iteration in range(1, _BETA_FRACTION_MAX_ITERATIONS + 1):
+        doubled = 2 * iteration
+        numerator = iteration * (beta - iteration) * value
+        denominator_factor = (alpha_minus_one + doubled) * (alpha + doubled)
+        denominator = 1.0 + numerator * denominator / denominator_factor
+        if abs(denominator) < _BETA_FRACTION_MINIMUM:
+            denominator = _BETA_FRACTION_MINIMUM
+        numerator_factor = 1.0 + numerator / denominator_factor / numerator_factor
+        if abs(numerator_factor) < _BETA_FRACTION_MINIMUM:
+            numerator_factor = _BETA_FRACTION_MINIMUM
+        denominator = 1.0 / denominator
+        fraction *= denominator * numerator_factor
+
+        numerator = -(alpha + iteration) * (alpha_plus_beta + iteration) * value
+        denominator_factor = (alpha + doubled) * (alpha_plus_one + doubled)
+        denominator = 1.0 + numerator * denominator / denominator_factor
+        if abs(denominator) < _BETA_FRACTION_MINIMUM:
+            denominator = _BETA_FRACTION_MINIMUM
+        numerator_factor = 1.0 + numerator / denominator_factor / numerator_factor
+        if abs(numerator_factor) < _BETA_FRACTION_MINIMUM:
+            numerator_factor = _BETA_FRACTION_MINIMUM
+        denominator = 1.0 / denominator
+        delta = denominator * numerator_factor
+        fraction *= delta
+        if abs(delta - 1.0) <= _BETA_FRACTION_EPSILON:
+            return fraction
+    raise RecommendationError("exact binomial confidence interval did not converge")
+
+
+def _regularized_incomplete_beta(alpha: float, beta: float, value: float) -> float:
+    """Return I_x(alpha, beta) without a new scientific-computing dependency."""
+
+    if not alpha > 0.0 or not beta > 0.0 or not 0.0 <= value <= 1.0:
+        raise RecommendationError("exact binomial confidence interval inputs are invalid")
+    if value == 0.0:
+        return 0.0
+    if value == 1.0:
+        return 1.0
+    log_front = (
+        alpha * math.log(value)
+        + beta * math.log1p(-value)
+        - math.lgamma(alpha)
+        - math.lgamma(beta)
+        + math.lgamma(alpha + beta)
+    )
+    front = math.exp(log_front)
+    pivot = (alpha + 1.0) / (alpha + beta + 2.0)
+    if value < pivot:
+        return front * _beta_continued_fraction(alpha, beta, value) / alpha
+    return 1.0 - front * _beta_continued_fraction(beta, alpha, 1.0 - value) / beta
+
+
+def _inverse_regularized_incomplete_beta(probability: float, alpha: float, beta: float) -> float:
+    """Invert I_x(alpha, beta) with a deterministic bounded bisection search."""
+
+    if not 0.0 <= probability <= 1.0:
+        raise RecommendationError("exact binomial confidence probability is invalid")
+    if probability == 0.0:
+        return 0.0
+    if probability == 1.0:
+        return 1.0
+    lower = 0.0
+    upper = 1.0
+    for _ in range(100):
+        midpoint = (lower + upper) / 2.0
+        if _regularized_incomplete_beta(alpha, beta, midpoint) < probability:
+            lower = midpoint
+        else:
+            upper = midpoint
+    return (lower + upper) / 2.0
+
+
+def _clopper_pearson_lower_bound(correct: int, sample_size: int) -> float | None:
+    """Return the two-sided 95% exact binomial lower bound, or none with no sample."""
+
+    if sample_size == 0:
+        return None
+    if correct < 0 or correct > sample_size:
+        raise RecommendationError("exact binomial confidence interval counts are invalid")
+    if correct == 0:
+        return 0.0
+    lower_tail = (1.0 - _RESEARCH_CLAIM_CONFIDENCE) / 2.0
+    bound = _inverse_regularized_incomplete_beta(
+        lower_tail, float(correct), float(sample_size - correct + 1)
+    )
+    return min(1.0, max(0.0, bound))
 
 
 def backfill_recommendations(
@@ -455,14 +578,30 @@ def backfill_recommendations(
 
 
 def accuracy_report(
-    recommendations: Iterable[Recommendation], outcomes: Iterable[RecommendationOutcome]
+    recommendations: Iterable[Recommendation],
+    outcomes: Iterable[RecommendationOutcome],
+    provenance: RecommendationHistoryProvenance | None = None,
 ) -> dict[str, Any]:
+    """Calculate metrics and keep statistical evidence separate from claim eligibility."""
+
     records = {item.id: item for item in recommendations}
-    result: dict[str, Any] = {"horizons": {}, "inconclusive": True}
+    restored_outcomes = list(outcomes)
+    strict_oos_valid = provenance is not None and provenance.strict_oos
+    if strict_oos_valid:
+        validate_strict_oos_history(records.values(), provenance)
+    strict_oos_reason = (
+        "strict_oos_provenance_valid" if strict_oos_valid else "strict_oos_provenance_required"
+    )
+    result: dict[str, Any] = {
+        "horizons": {},
+        "inconclusive": True,
+        "strict_oos": strict_oos_valid,
+        "strict_oos_validation": strict_oos_reason,
+    }
     for horizon in HORIZONS:
         resolved = [
             item
-            for item in outcomes
+            for item in restored_outcomes
             if item.horizon == horizon and item.status == RecommendationOutcomeStatus.RESOLVED
         ]
         applicable = [
@@ -514,16 +653,21 @@ def accuracy_report(
         )
         sample = len(applicable)
         accuracy = correct / sample if sample else None
-        interval = (
-            1.96 * math.sqrt(accuracy * (1 - accuracy) / sample)
-            if accuracy is not None and sample >= 2
-            else None
-        )
-        research_claim_eligible = (
+        exact_lower_bound = _clopper_pearson_lower_bound(correct, sample)
+        statistical_gate_passed = (
             sample >= _MIN_RESEARCH_CLAIM_SAMPLES
-            and accuracy is not None
-            and interval is not None
-            and accuracy - interval > 0.5
+            and exact_lower_bound is not None
+            and exact_lower_bound > _RESEARCH_CLAIM_CHANCE_THRESHOLD
+        )
+        research_claim_eligible = strict_oos_valid and statistical_gate_passed
+        eligibility_reason = (
+            "eligible"
+            if research_claim_eligible
+            else strict_oos_reason
+            if not strict_oos_valid
+            else "fewer_than_100_applicable_resolved_samples"
+            if sample < _MIN_RESEARCH_CLAIM_SAMPLES
+            else "exact_95_percent_lower_bound_not_above_50_percent"
         )
         result["horizons"][horizon] = {
             "total_recommendations": len(records),
@@ -540,13 +684,27 @@ def accuracy_report(
             "brier_score": brier,
             "calibration": calibration,
             "sample_size": sample,
-            "directional_accuracy_95ci_half_width": interval,
+            "statistical_result": {
+                "minimum_applicable_resolved_samples": _MIN_RESEARCH_CLAIM_SAMPLES,
+                "applicable_resolved_samples": sample,
+                "two_sided_95_percent_exact_lower_bound": exact_lower_bound,
+                "lower_bound_must_exceed": _RESEARCH_CLAIM_CHANCE_THRESHOLD,
+                "passed": statistical_gate_passed,
+            },
             "inconclusive": sample < _MIN_CONCLUSIVE_SAMPLES,
             "research_claim_eligible": research_claim_eligible,
+            "research_claim_eligibility_reason": eligibility_reason,
         }
     result["inconclusive"] = all(item["inconclusive"] for item in result["horizons"].values())
     result["research_claim_eligible"] = all(
         item["research_claim_eligible"] for item in result["horizons"].values()
+    )
+    result["research_claim_eligibility_reason"] = (
+        "eligible"
+        if result["research_claim_eligible"]
+        else strict_oos_reason
+        if not strict_oos_valid
+        else "one_or_more_horizons_failed_the_statistical_gate"
     )
     return result
 
