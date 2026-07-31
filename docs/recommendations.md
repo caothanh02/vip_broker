@@ -60,3 +60,22 @@ uv run trading-bot evaluate-recommendations --input reports/recommendations/hist
 
 The latest recommendation and history are atomic JSON files under ignored `reports/recommendations/`.
 They contain neither credentials nor broker/order identifiers and can be restored on restart.
+
+## Freeze development research input
+
+Before a walk-forward experiment, freeze the verified development dataset—not a strict OOS history—with:
+
+```powershell
+uv run trading-bot freeze-recommendation-research --input data/raw/btcusdt_1h_development_2022_2024.csv --output reports/research/manifests/development.json
+```
+
+The command rejects absent or checksum-invalid metadata/anomaly sidecars, unverified gaps, open
+candles, non-BTC/USDT 1h UTC data, incorrect development range, and any interruption other than
+the audited 2023-03-24 13:00 UTC non-tradable event. Its ignored atomic manifest records the CSV,
+metadata, and anomaly-report SHA-256 values, generation ID, official-online verification mode, and
+interruption URLs. This manifest is a prerequisite for walk-forward research; it is not an accuracy
+report, recommendation history, strict OOS evidence, or an instruction to trade. Run with
+`--overwrite` only after validation completes if replacing an existing manifest is intentional.
+The output is mandatory: it must be a `.json` file directly or recursively under
+`reports/research/manifests/`; traversal, source/docs paths, dataset files, and sidecars are
+rejected before the dataset is read.

@@ -23,6 +23,7 @@ reports/ml/*
 reports/dry_run/*
 data/dry_run/*
 reports/recommendations/*
+reports/research/
 reports/*.json
 !reports/**/.gitkeep
 *.db

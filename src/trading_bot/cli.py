@@ -51,6 +51,7 @@ from trading_bot.recommendations.engine import (
     recommendation_json,
     validate_strict_oos_history,
 )
+from trading_bot.recommendations.research import ResearchFreezeError, freeze_development_dataset
 from trading_bot.runtime.dry_run import (
     DryRunEngine,
     DryRunError,
@@ -244,6 +245,10 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_recommendations = subcommands.add_parser("evaluate-recommendations")
     evaluate_recommendations.add_argument("--input", type=Path, required=True)
     evaluate_recommendations.add_argument("--output", type=Path, required=True)
+    freeze_research = subcommands.add_parser("freeze-recommendation-research")
+    freeze_research.add_argument("--input", type=Path, required=True)
+    freeze_research.add_argument("--output", type=Path, required=True)
+    freeze_research.add_argument("--overwrite", action="store_true")
     return parser
 
 
@@ -647,6 +652,24 @@ def _evaluate_recommendations(args: argparse.Namespace) -> None:
     print(json.dumps(payload, indent=2))
 
 
+def _freeze_recommendation_research(args: argparse.Namespace) -> None:
+    manifest = freeze_development_dataset(args.input, args.output, overwrite=args.overwrite)
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "schema_version": manifest["schema_version"],
+                "research_role": manifest["research_role"],
+                "candle_count": manifest["dataset"]["candle_count"],
+                "validation_status": manifest["dataset"]["validation_status"],
+                "market_interruption_count": len(manifest["market_interruptions"]),
+                "safety_locks": manifest["safety_locks"],
+            },
+            indent=2,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -670,6 +693,8 @@ def main(argv: list[str] | None = None) -> int:
             _backfill_recommendations(args, settings)
         elif args.command == "evaluate-recommendations":
             _evaluate_recommendations(args)
+        elif args.command == "freeze-recommendation-research":
+            _freeze_recommendation_research(args)
         else:
             print(f"{args.command}: no live activity performed.")
     except (
@@ -678,6 +703,7 @@ def main(argv: list[str] | None = None) -> int:
         CandleValidationError,
         CsvDataError,
         DataCoverageError,
+        ResearchFreezeError,
         DatasetBuildError,
         BaselineTrainingError,
         DryRunError,
