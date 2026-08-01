@@ -104,6 +104,22 @@ The runner executes these exact v1 folds against the frozen development manifest
 ignored atomic development-only report, and can select only `selected` or `no_policy_selected`
 within development. It does not download, freeze, evaluate, or otherwise open OOS 2025.
 
+## Strict OOS baseline evaluation
+
+After one immutable candidate contract is selected and frozen by development governance, evaluate
+it once on the separate `[2025-01-01T00:00:00Z, 2026-01-01T00:00:00Z)` BTC/USDT 1h dataset. Freeze
+that verified dataset separately, then run only the already registered candidate:
+
+```powershell
+uv run trading-bot freeze-strict-oos-recommendation-research --input data/raw/btcusdt_1h_strict_oos_2025.csv --output reports/research/manifests/strict_oos_2025.json
+uv run trading-bot run-strict-oos-recommendation-evaluation --manifest reports/research/manifests/strict_oos_2025.json --candidate baseline_ema_volume_atr_v1 --output reports/research/strict-oos/baseline_ema_volume_atr_v1_2025.json
+```
+
+The manifest and report are ignored artifacts. They lock verified dataset and sidecar provenance,
+but cannot alter candidate parameters, costs, features, or the registry. The evaluation report
+uses strict provenance plus the exact statistical gate; it never creates a replacement candidate,
+submits an order, or constitutes investment advice.
+
 ## Acceptance gates
 
 Report 1h, 4h, and 24h independently. The primary statistic is after-cost directional accuracy

@@ -56,6 +56,11 @@ from trading_bot.recommendations.experiments import (
     run_development_experiment,
 )
 from trading_bot.recommendations.research import ResearchFreezeError, freeze_development_dataset
+from trading_bot.recommendations.strict_oos import (
+    StrictOosError,
+    freeze_strict_oos_dataset,
+    run_strict_oos_evaluation,
+)
 from trading_bot.recommendations.walk_forward import (
     RecommendationWalkForwardError,
     run_development_walk_forward,
@@ -267,6 +272,15 @@ def build_parser() -> argparse.ArgumentParser:
     walk_forward.add_argument("--candidate", required=True)
     walk_forward.add_argument("--output", type=Path, required=True)
     walk_forward.add_argument("--overwrite", action="store_true")
+    freeze_oos = subcommands.add_parser("freeze-strict-oos-recommendation-research")
+    freeze_oos.add_argument("--input", type=Path, required=True)
+    freeze_oos.add_argument("--output", type=Path, required=True)
+    freeze_oos.add_argument("--overwrite", action="store_true")
+    strict_oos = subcommands.add_parser("run-strict-oos-recommendation-evaluation")
+    strict_oos.add_argument("--manifest", type=Path, required=True)
+    strict_oos.add_argument("--candidate", required=True)
+    strict_oos.add_argument("--output", type=Path, required=True)
+    strict_oos.add_argument("--overwrite", action="store_true")
     return parser
 
 
@@ -738,6 +752,44 @@ def _run_recommendation_walk_forward(args: argparse.Namespace, settings: BotSett
     )
 
 
+def _freeze_strict_oos_recommendation_research(args: argparse.Namespace) -> None:
+    manifest = freeze_strict_oos_dataset(args.input, args.output, overwrite=args.overwrite)
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "research_role": manifest["research_role"],
+                "strict_oos_evaluation_history": manifest["strict_oos_evaluation_history"],
+                "candle_count": manifest["dataset"]["candle_count"],
+                "safety_locks": manifest["safety_locks"],
+            },
+            indent=2,
+        )
+    )
+
+
+def _run_strict_oos_recommendation_evaluation(
+    args: argparse.Namespace, settings: BotSettings
+) -> None:
+    result = run_strict_oos_evaluation(
+        args.manifest, args.candidate, args.output, settings, overwrite=args.overwrite
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "candidate_id": result["candidate_id"],
+                "research_role": result["research_role"],
+                "research_claim_eligible": result["research_claim_eligible"],
+                "recommendation_count": result["recommendation_count"],
+                "outcome_count": result["outcome_count"],
+                "safety_locks": result["safety_locks"],
+            },
+            indent=2,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -767,6 +819,10 @@ def main(argv: list[str] | None = None) -> int:
             _run_recommendation_experiment(args, settings)
         elif args.command == "run-recommendation-walk-forward":
             _run_recommendation_walk_forward(args, settings)
+        elif args.command == "freeze-strict-oos-recommendation-research":
+            _freeze_strict_oos_recommendation_research(args)
+        elif args.command == "run-strict-oos-recommendation-evaluation":
+            _run_strict_oos_recommendation_evaluation(args, settings)
         else:
             print(f"{args.command}: no live activity performed.")
     except (
@@ -776,6 +832,7 @@ def main(argv: list[str] | None = None) -> int:
         CsvDataError,
         DataCoverageError,
         ResearchFreezeError,
+        StrictOosError,
         DatasetBuildError,
         BaselineTrainingError,
         DryRunError,

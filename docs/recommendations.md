@@ -111,3 +111,12 @@ uv run trading-bot run-recommendation-walk-forward --manifest reports/research/m
 
 The ignored report is development-only, keeps `research_claim_eligible: false`, and may choose
 only a development policy decision; it is never an OOS or public accuracy report.
+
+## Strict OOS evaluation
+
+Strict OOS evaluation uses a separately frozen, checksum-verified BTC/USDT 1h dataset for
+`[2025-01-01T00:00:00Z, 2026-01-01T00:00:00Z)`. It evaluates only the already registered immutable
+candidate and cost contract; it cannot tune, replace, or reject a candidate to create another one.
+Both the strict manifest and report are ignored and must be placed under `reports/research/`.
+`research_claim_eligible` is true only when strict provenance and every existing statistical gate
+pass. The report remains research output, not investment advice or a trading instruction.
