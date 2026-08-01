@@ -80,9 +80,12 @@ maximum NEUTRAL rate; then the earlier registry entry. An unresolved exact tie s
 If no candidate passes, select no policy and retain the safe research default rather than adding
 or tuning variants.
 
-After exactly one policy is selected, freeze its complete candidate contract and selection record
-before opening any strict OOS 2025 history. No report from OOS 2025 may be read before that
-decision.
+After exactly one policy is selected, seal an immutable development selection artifact before
+opening any strict OOS 2025 history. The artifact binds the selected candidate and complete cost
+contract to the checksum-locked development walk-forward report, frozen development manifest,
+protocol version, and exact source revision. It is accepted only when the report says `selected`;
+`no_policy_selected` means retain the safe `NEUTRAL` default and do not open OOS data. No report
+from OOS 2025 may be read before that artifact is valid.
 
 ### Leakage and overfitting guard
 
@@ -106,19 +109,23 @@ within development. It does not download, freeze, evaluate, or otherwise open OO
 
 ## Strict OOS baseline evaluation
 
-After one immutable candidate contract is selected and frozen by development governance, evaluate
-it once on the separate `[2025-01-01T00:00:00Z, 2026-01-01T00:00:00Z)` BTC/USDT 1h dataset. Freeze
-that verified dataset separately, then run only the already registered candidate:
+After one immutable candidate contract is selected by development governance, seal the report
+first, then evaluate it once on the separate `[2025-01-01T00:00:00Z, 2026-01-01T00:00:00Z)`
+BTC/USDT 1h dataset. The strict commands validate the artifact before reading any OOS manifest,
+CSV, metadata, or anomaly sidecar:
 
 ```powershell
-uv run trading-bot freeze-strict-oos-recommendation-research --input data/raw/btcusdt_1h_strict_oos_2025.csv --output reports/research/manifests/strict_oos_2025.json
-uv run trading-bot run-strict-oos-recommendation-evaluation --manifest reports/research/manifests/strict_oos_2025.json --candidate baseline_ema_volume_atr_v1 --output reports/research/strict-oos/baseline_ema_volume_atr_v1_2025.json
+uv run trading-bot seal-development-recommendation-selection --report reports/research/walk-forward/selected_candidate.json --output reports/research/selections/selected_candidate.json
+uv run trading-bot freeze-strict-oos-recommendation-research --input data/raw/btcusdt_1h_strict_oos_2025.csv --output reports/research/manifests/strict_oos_2025.json --selection-artifact reports/research/selections/selected_candidate.json --candidate baseline_ema_volume_atr_v1
+uv run trading-bot run-strict-oos-recommendation-evaluation --manifest reports/research/manifests/strict_oos_2025.json --candidate baseline_ema_volume_atr_v1 --selection-artifact reports/research/selections/selected_candidate.json --output reports/research/strict-oos/baseline_ema_volume_atr_v1_2025.json
 ```
 
-The manifest and report are ignored artifacts. They lock verified dataset and sidecar provenance,
-but cannot alter candidate parameters, costs, features, or the registry. The evaluation report
-uses strict provenance plus the exact statistical gate; it never creates a replacement candidate,
-submits an order, or constitutes investment advice.
+The selection artifact, strict manifest, and strict report are ignored artifacts. They lock the
+development selection plus verified dataset and sidecar provenance, and record the exact code
+revision. They cannot alter candidate parameters, costs, features, or the registry. The
+evaluation report binds the selection-artifact checksum together with strict provenance and the
+exact statistical gate; it never creates a replacement candidate, submits an order, or
+constitutes investment advice.
 
 ## Acceptance gates
 

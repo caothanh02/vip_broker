@@ -56,6 +56,10 @@ from trading_bot.recommendations.experiments import (
     run_development_experiment,
 )
 from trading_bot.recommendations.research import ResearchFreezeError, freeze_development_dataset
+from trading_bot.recommendations.selection import (
+    DevelopmentSelectionError,
+    create_development_selection,
+)
 from trading_bot.recommendations.strict_oos import (
     StrictOosError,
     freeze_strict_oos_dataset,
@@ -275,11 +279,18 @@ def build_parser() -> argparse.ArgumentParser:
     freeze_oos = subcommands.add_parser("freeze-strict-oos-recommendation-research")
     freeze_oos.add_argument("--input", type=Path, required=True)
     freeze_oos.add_argument("--output", type=Path, required=True)
+    freeze_oos.add_argument("--selection-artifact", type=Path, required=True)
+    freeze_oos.add_argument("--candidate", required=True)
     freeze_oos.add_argument("--overwrite", action="store_true")
+    selection = subcommands.add_parser("seal-development-recommendation-selection")
+    selection.add_argument("--report", type=Path, required=True)
+    selection.add_argument("--output", type=Path, required=True)
+    selection.add_argument("--overwrite", action="store_true")
     strict_oos = subcommands.add_parser("run-strict-oos-recommendation-evaluation")
     strict_oos.add_argument("--manifest", type=Path, required=True)
     strict_oos.add_argument("--candidate", required=True)
     strict_oos.add_argument("--output", type=Path, required=True)
+    strict_oos.add_argument("--selection-artifact", type=Path, required=True)
     strict_oos.add_argument("--overwrite", action="store_true")
     return parser
 
@@ -753,7 +764,9 @@ def _run_recommendation_walk_forward(args: argparse.Namespace, settings: BotSett
 
 
 def _freeze_strict_oos_recommendation_research(args: argparse.Namespace) -> None:
-    manifest = freeze_strict_oos_dataset(args.input, args.output, overwrite=args.overwrite)
+    manifest = freeze_strict_oos_dataset(
+        args.input, args.output, args.selection_artifact, args.candidate, overwrite=args.overwrite
+    )
     print(
         json.dumps(
             {
@@ -768,11 +781,32 @@ def _freeze_strict_oos_recommendation_research(args: argparse.Namespace) -> None
     )
 
 
+def _seal_development_recommendation_selection(args: argparse.Namespace) -> None:
+    artifact = create_development_selection(args.report, args.output, overwrite=args.overwrite)
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "candidate_id": artifact["candidate_id"],
+                "protocol_version": artifact["protocol_version"],
+                "code_revision": artifact["code_revision"],
+                "strict_oos_authorized": artifact["strict_oos_authorized"],
+            },
+            indent=2,
+        )
+    )
+
+
 def _run_strict_oos_recommendation_evaluation(
     args: argparse.Namespace, settings: BotSettings
 ) -> None:
     result = run_strict_oos_evaluation(
-        args.manifest, args.candidate, args.output, settings, overwrite=args.overwrite
+        args.manifest,
+        args.candidate,
+        args.output,
+        args.selection_artifact,
+        settings,
+        overwrite=args.overwrite,
     )
     print(
         json.dumps(
@@ -821,6 +855,8 @@ def main(argv: list[str] | None = None) -> int:
             _run_recommendation_walk_forward(args, settings)
         elif args.command == "freeze-strict-oos-recommendation-research":
             _freeze_strict_oos_recommendation_research(args)
+        elif args.command == "seal-development-recommendation-selection":
+            _seal_development_recommendation_selection(args)
         elif args.command == "run-strict-oos-recommendation-evaluation":
             _run_strict_oos_recommendation_evaluation(args, settings)
         else:
@@ -832,6 +868,7 @@ def main(argv: list[str] | None = None) -> int:
         CsvDataError,
         DataCoverageError,
         ResearchFreezeError,
+        DevelopmentSelectionError,
         StrictOosError,
         DatasetBuildError,
         BaselineTrainingError,

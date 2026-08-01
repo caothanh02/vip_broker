@@ -112,6 +112,19 @@ uv run trading-bot run-recommendation-walk-forward --manifest reports/research/m
 The ignored report is development-only, keeps `research_claim_eligible: false`, and may choose
 only a development policy decision; it is never an OOS or public accuracy report.
 
+If—and only if—the development report says `selected`, seal it before any strict OOS input is
+opened:
+
+```powershell
+uv run trading-bot seal-development-recommendation-selection --report reports/research/walk-forward/selected_candidate.json --output reports/research/selections/selected_candidate.json
+```
+
+The ignored artifact binds the exact candidate/cost contract, development report and manifest
+checksums, protocol version, and code revision. `no_policy_selected` is not sealable: it means
+stay at the research-safe `NEUTRAL` default and do not read OOS data. Strict OOS freeze and
+evaluation require this artifact before they read an OOS manifest, CSV, metadata, or anomaly
+sidecar.
+
 ## Strict OOS evaluation
 
 Strict OOS evaluation uses a separately frozen, checksum-verified BTC/USDT 1h dataset for
@@ -119,4 +132,5 @@ Strict OOS evaluation uses a separately frozen, checksum-verified BTC/USDT 1h da
 candidate and cost contract; it cannot tune, replace, or reject a candidate to create another one.
 Both the strict manifest and report are ignored and must be placed under `reports/research/`.
 `research_claim_eligible` is true only when strict provenance and every existing statistical gate
-pass. The report remains research output, not investment advice or a trading instruction.
+pass, including the bound development-selection artifact and matching source revision. The report
+remains research output, not investment advice or a trading instruction.

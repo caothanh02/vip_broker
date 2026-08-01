@@ -27,10 +27,15 @@ from trading_bot.recommendations.engine import (
     backfill_recommendations,
     evaluate_outcomes,
 )
+from trading_bot.recommendations.selection import (
+    DevelopmentSelectionError,
+    source_revision,
+    validate_development_selection,
+)
 from trading_bot.settings import BotSettings
 
-_MANIFEST_SCHEMA_VERSION = "1.0"
-_REPORT_SCHEMA_VERSION = "1.0"
+_MANIFEST_SCHEMA_VERSION = "1.1"
+_REPORT_SCHEMA_VERSION = "1.1"
 _MANIFEST_DIRECTORY = Path("reports/research/manifests")
 _REPORT_DIRECTORY = Path("reports/research/strict-oos")
 _OOS_START = datetime(2025, 1, 1, tzinfo=UTC)
@@ -204,12 +209,20 @@ def _verify_oos_dataset(input_path: Path) -> _VerifiedOosInput:
 def freeze_strict_oos_dataset(
     input_path: Path,
     output_path: Path,
+    selection_artifact_path: Path,
+    candidate_id: str,
     *,
     overwrite: bool,
     now: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Freeze the fully separated 2025 strict-OOS dataset after sidecar verification."""
 
+    try:
+        selection, selection_sha256 = validate_development_selection(
+            selection_artifact_path, candidate_id
+        )
+    except DevelopmentSelectionError as exc:
+        raise StrictOosError(str(exc)) from exc
     resolved_input = _inside_workspace(str(input_path), "strict OOS dataset path")
     resolved_output = _output_path(output_path, _MANIFEST_DIRECTORY, "strict OOS manifest output")
     verified = _verify_oos_dataset(resolved_input)
@@ -223,6 +236,15 @@ def freeze_strict_oos_dataset(
         "research_role": "strict_oos",
         "strict_oos_evaluation_history": True,
         "strict_oos_start": _utc(_OOS_START),
+        "code_revision": source_revision(),
+        "selection_artifact": {
+            "path": selection_artifact_path.as_posix(),
+            "sha256": selection_sha256,
+            "candidate_id": selection["candidate_id"],
+            "candidate": selection["candidate"],
+            "development_report": selection["development_report"],
+            "development_manifest": selection["development_manifest"],
+        },
         "dataset": verified.dataset,
         "market_interruptions": verified.interruptions,
         "safety_locks": {
@@ -236,7 +258,9 @@ def freeze_strict_oos_dataset(
     return manifest
 
 
-def _manifest_snapshot(path: Path) -> tuple[dict[str, Any], _VerifiedOosInput, str]:
+def _manifest_snapshot(
+    path: Path, selection_artifact: dict[str, Any], selection_sha256: str
+) -> tuple[dict[str, Any], _VerifiedOosInput, str]:
     resolved = _manifest_path(path)
     manifest = _read_object(resolved, "strict OOS manifest")
     expected = {
@@ -245,16 +269,26 @@ def _manifest_snapshot(path: Path) -> tuple[dict[str, Any], _VerifiedOosInput, s
         "research_role",
         "strict_oos_evaluation_history",
         "strict_oos_start",
+        "code_revision",
+        "selection_artifact",
         "dataset",
         "market_interruptions",
         "safety_locks",
     }
     if set(manifest) != expected or manifest.get("schema_version") != _MANIFEST_SCHEMA_VERSION:
         raise StrictOosError("strict OOS manifest schema is invalid")
+    selection = manifest.get("selection_artifact")
     if (
         manifest.get("research_role") != "strict_oos"
         or manifest.get("strict_oos_evaluation_history") is not True
         or _parse_utc(manifest.get("strict_oos_start"), "strict OOS start") != _OOS_START
+        or manifest.get("code_revision") != source_revision()
+        or not isinstance(selection, dict)
+        or selection.get("sha256") != selection_sha256
+        or selection.get("candidate_id") != selection_artifact["candidate_id"]
+        or selection.get("candidate") != selection_artifact["candidate"]
+        or selection.get("development_report") != selection_artifact["development_report"]
+        or selection.get("development_manifest") != selection_artifact["development_manifest"]
     ):
         raise StrictOosError("strict OOS manifest provenance is invalid")
     dataset = manifest.get("dataset")
@@ -294,6 +328,7 @@ def run_strict_oos_evaluation(
     manifest_path: Path,
     candidate_id: str,
     output_path: Path,
+    selection_artifact_path: Path,
     settings: BotSettings,
     *,
     overwrite: bool,
@@ -309,8 +344,16 @@ def run_strict_oos_evaluation(
         experiments._validate_candidate_settings(candidate_id, settings)
     except experiments.RecommendationExperimentError as exc:
         raise StrictOosError(str(exc)) from exc
+    try:
+        selection, selection_sha256 = validate_development_selection(
+            selection_artifact_path, candidate_id
+        )
+    except DevelopmentSelectionError as exc:
+        raise StrictOosError(str(exc)) from exc
     resolved_output = _output_path(output_path, _REPORT_DIRECTORY, "strict OOS report output")
-    manifest, verified, manifest_sha256 = _manifest_snapshot(manifest_path)
+    manifest, verified, manifest_sha256 = _manifest_snapshot(
+        manifest_path, selection, selection_sha256
+    )
     if resolved_output.exists() and not overwrite:
         raise StrictOosError("strict OOS report already exists; pass --overwrite after validation")
     recommendations = backfill_recommendations(
@@ -338,6 +381,15 @@ def run_strict_oos_evaluation(
         "research_role": "strict_oos",
         "strict_oos_evaluation_history": True,
         "strict_oos_start": _utc(_OOS_START),
+        "code_revision": source_revision(),
+        "selection_artifact": {
+            "path": selection_artifact_path.as_posix(),
+            "sha256": selection_sha256,
+            "candidate_id": selection["candidate_id"],
+            "candidate": selection["candidate"],
+            "development_report": selection["development_report"],
+            "development_manifest": selection["development_manifest"],
+        },
         "research_claim_eligible": metrics["research_claim_eligible"],
         "research_claim_eligibility_reason": metrics["research_claim_eligibility_reason"],
         "source_manifest": {

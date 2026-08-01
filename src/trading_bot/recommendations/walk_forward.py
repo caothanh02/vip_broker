@@ -30,6 +30,7 @@ from trading_bot.recommendations.engine import (
     outcome_json,
     recommendation_json,
 )
+from trading_bot.recommendations.selection import source_revision
 from trading_bot.settings import BotSettings
 
 _WALK_FORWARD_SCHEMA_VERSION = "1.0"
@@ -366,6 +367,7 @@ def run_development_walk_forward(
     result: dict[str, Any] = {
         "schema_version": _WALK_FORWARD_SCHEMA_VERSION,
         "protocol_version": PROTOCOL_VERSION,
+        "code_revision": source_revision(),
         "run_at": _utc(run_time),
         "candidate_id": candidate_id,
         "candidate": experiments._CANDIDATES[candidate_id],
