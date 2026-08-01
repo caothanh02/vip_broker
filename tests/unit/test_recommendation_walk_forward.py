@@ -21,7 +21,20 @@ from trading_bot.recommendations.engine import (
     backfill_recommendations,
     evaluate_outcomes,
 )
+from trading_bot.recommendations.selection import DevelopmentSelectionError
 from trading_bot.settings import BotSettings
+
+
+def _identity() -> dict[str, Any]:
+    return {
+        "schema_version": "1.0",
+        "revision": "a" * 40,
+        "tracked_objects": {
+            "src/trading_bot": "b" * 40,
+            "pyproject.toml": "c" * 40,
+            "uv.lock": "d" * 40,
+        },
+    }
 
 
 def _candle(
@@ -271,6 +284,7 @@ def test_runner_writes_development_only_report_with_validation_windows_only(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(walk_forward, "source_identity", _identity)
     manifest_path = tmp_path / "reports/research/manifests/development.json"
     snapshot = experiments._VerifiedExperimentInput(
         manifest_path,
@@ -318,6 +332,7 @@ def test_runner_writes_development_only_report_with_validation_windows_only(
         BotSettings(),
         overwrite=False,
         now=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        identity=_identity,
     )
 
     assert all(
@@ -326,6 +341,7 @@ def test_runner_writes_development_only_report_with_validation_windows_only(
     )
     assert [fold["recommendation_count"] for fold in report["folds"]] == [1, 1, 1]
     assert report["selection_decision"]["decision"] == "no_policy_selected"
+    assert report["source_identity"] == _identity()
     assert report["research_role"] == "development"
     assert report["strict_oos_evaluation_history"] is False
     assert report["research_claim_eligible"] is False
@@ -338,6 +354,33 @@ def test_runner_writes_development_only_report_with_validation_windows_only(
             output,
             BotSettings(),
             overwrite=False,
+            identity=_identity,
+        )
+
+
+def test_dirty_executable_source_blocks_walk_forward_before_manifest_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def dirty_identity() -> dict[str, Any]:
+        raise DevelopmentSelectionError("tracked executable source tree is not clean")
+
+    monkeypatch.setattr(walk_forward, "source_identity", dirty_identity)
+    monkeypatch.setattr(
+        experiments,
+        "_verified_experiment_input",
+        lambda *_: (_ for _ in ()).throw(AssertionError("manifest must not be read")),
+    )
+
+    with pytest.raises(walk_forward.RecommendationWalkForwardError, match="not clean"):
+        walk_forward.run_development_walk_forward(
+            Path("reports/research/manifests/development.json"),
+            "baseline_ema_volume_atr_v1",
+            Path("reports/research/walk-forward/result.json"),
+            BotSettings(),
+            overwrite=False,
+            identity=dirty_identity,
         )
 
 

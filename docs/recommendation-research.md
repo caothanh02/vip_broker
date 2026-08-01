@@ -90,9 +90,16 @@ standalone `selection_decision` field. It is accepted only when the recomputed r
 No report from OOS 2025 may be read before that artifact is valid.
 
 The source identity is the checked-out revision plus Git object IDs for `src/trading_bot`,
-`pyproject.toml`, and `uv.lock`. Sealing, strict freeze, and strict evaluation fail closed when any
-of those executable inputs has staged, unstaged, or untracked changes. Documentation and ignored
+`pyproject.toml`, and `uv.lock`. The development runner records it in the report and fails closed
+before opening its manifest when any executable input has staged, unstaged, or untracked changes.
+Sealing and strict freeze/evaluation require the same clean identity. Documentation and ignored
 reports/cache are deliberately outside this check, so they cannot create a false failure.
+
+Selection authorization also replays the complete deterministic walk-forward computation from the
+report's checksum-locked frozen development manifest, with the recorded candidate/cost contract.
+The replay stays in memory and never overwrites a report, history, or artifact. Its folds, pooled
+metrics, selection gate, decision, provenance, and safety locks must match the submitted report
+exactly. A mutable JSON metric is therefore never sufficient to authorize strict OOS access.
 
 ### Leakage and overfitting guard
 
@@ -128,8 +135,8 @@ uv run trading-bot run-strict-oos-recommendation-evaluation --manifest reports/r
 ```
 
 The selection artifact, strict manifest, and strict report are ignored artifacts. They lock the
-development selection plus verified dataset and sidecar provenance, and record the exact source
-identity. They cannot alter candidate parameters, costs, features, or the registry. The
+verified deterministic development replay plus dataset and sidecar provenance, and record the
+exact source identity. They cannot alter candidate parameters, costs, features, or the registry. The
 evaluation report binds the selection-artifact checksum together with strict provenance and the
 exact statistical gate; it never creates a replacement candidate, submits an order, or
 constitutes investment advice.

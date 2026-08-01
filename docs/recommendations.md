@@ -124,9 +124,10 @@ checksums, protocol version, and code revision. `no_policy_selected` is not seal
 stay at the research-safe `NEUTRAL` default and do not read OOS data. Strict OOS freeze and
 evaluation require this artifact before they read an OOS manifest, CSV, metadata, or anomaly
 sidecar. The artifact is issued only after the runner's fold and pooled gate evidence is
-recomputed; changing a JSON `selection_decision` alone cannot authorize OOS access. Its source
-identity locks the revision and tracked executable inputs (`src/trading_bot`, `pyproject.toml`,
-and `uv.lock`), which must be clean for sealing and strict use.
+replayed from the checksum-locked development manifest in memory; changing JSON metrics or a
+`selection_decision` alone cannot authorize OOS access. The report and artifact share a source
+identity that locks the revision and tracked executable inputs (`src/trading_bot`, `pyproject.toml`,
+and `uv.lock`), which must be clean for the runner, sealing, and strict use.
 
 ## Strict OOS evaluation
 

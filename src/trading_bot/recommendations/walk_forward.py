@@ -30,10 +30,10 @@ from trading_bot.recommendations.engine import (
     outcome_json,
     recommendation_json,
 )
-from trading_bot.recommendations.selection import source_revision
+from trading_bot.recommendations.selection import DevelopmentSelectionError, source_identity
 from trading_bot.settings import BotSettings
 
-_WALK_FORWARD_SCHEMA_VERSION = "1.0"
+_WALK_FORWARD_SCHEMA_VERSION = "1.1"
 PROTOCOL_VERSION = "development_walk_forward_v1"
 _WALK_FORWARD_DIRECTORY = Path("reports/research/walk-forward")
 _DEVELOPMENT_START = datetime(2022, 1, 1, tzinfo=UTC)
@@ -295,30 +295,27 @@ def select_candidate(results: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]
     return {"decision": "selected", "selected_candidate_id": identifier}
 
 
-def run_development_walk_forward(
+def build_development_walk_forward_report(
     manifest_path: Path,
     candidate_id: str,
-    output_path: Path,
     settings: BotSettings,
     *,
-    overwrite: bool,
     now: Callable[[], datetime] | None = None,
+    identity: Callable[[], dict[str, Any]] = source_identity,
 ) -> dict[str, Any]:
-    """Run the immutable v1 folds on the frozen development dataset only."""
+    """Deterministically compute v1 evidence without publishing any artifact."""
 
     if candidate_id not in experiments._CANDIDATES:
         raise RecommendationWalkForwardError("unknown or unregistered walk-forward candidate")
     if settings.bot_mode == "live" or settings.ml_filter_enabled:
         raise RecommendationWalkForwardError("walk-forward requires rule-only non-live settings")
-    resolved_output = _walk_forward_output_path(output_path)
     try:
+        current_identity = identity()
         experiments._validate_candidate_settings(candidate_id, settings)
         snapshot = experiments._verified_experiment_input(manifest_path)
-    except experiments.RecommendationExperimentError as exc:
+    except (DevelopmentSelectionError, experiments.RecommendationExperimentError) as exc:
         raise RecommendationWalkForwardError(str(exc)) from exc
     _validate_protocol_input(snapshot)
-    if resolved_output.exists() and not overwrite:
-        raise RecommendationWalkForwardError("walk-forward output already exists; pass --overwrite")
 
     fold_results: list[dict[str, Any]] = []
     all_recommendations: list[Recommendation] = []
@@ -367,7 +364,8 @@ def run_development_walk_forward(
     result: dict[str, Any] = {
         "schema_version": _WALK_FORWARD_SCHEMA_VERSION,
         "protocol_version": PROTOCOL_VERSION,
-        "code_revision": source_revision(),
+        "code_revision": current_identity["revision"],
+        "source_identity": current_identity,
         "run_at": _utc(run_time),
         "candidate_id": candidate_id,
         "candidate": experiments._CANDIDATES[candidate_id],
@@ -401,5 +399,26 @@ def run_development_walk_forward(
             "ml_inference_used": False,
         },
     }
+    return result
+
+
+def run_development_walk_forward(
+    manifest_path: Path,
+    candidate_id: str,
+    output_path: Path,
+    settings: BotSettings,
+    *,
+    overwrite: bool,
+    now: Callable[[], datetime] | None = None,
+    identity: Callable[[], dict[str, Any]] = source_identity,
+) -> dict[str, Any]:
+    """Run and atomically publish the immutable v1 development report."""
+
+    resolved_output = _walk_forward_output_path(output_path)
+    result = build_development_walk_forward_report(
+        manifest_path, candidate_id, settings, now=now, identity=identity
+    )
+    if resolved_output.exists() and not overwrite:
+        raise RecommendationWalkForwardError("walk-forward output already exists; pass --overwrite")
     write_json_atomic(resolved_output, result)
     return result

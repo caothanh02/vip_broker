@@ -11,6 +11,7 @@ from typing import Any
 
 from trading_bot.data.csv_store import csv_sha256, write_json_atomic
 from trading_bot.recommendations import experiments
+from trading_bot.settings import BotSettings
 
 _SCHEMA_VERSION = "1.1"
 _SOURCE_IDENTITY_SCHEMA_VERSION = "1.0"
@@ -19,6 +20,25 @@ _MANIFEST_DIRECTORY = Path("reports/research/manifests")
 _SELECTION_DIRECTORY = Path("reports/research/selections")
 _REVISION = re.compile(r"[0-9a-f]{40}\Z")
 _SOURCE_INPUTS = ("src/trading_bot", "pyproject.toml", "uv.lock")
+_REPLAY_KEYS = (
+    "schema_version",
+    "protocol_version",
+    "code_revision",
+    "source_identity",
+    "candidate_id",
+    "candidate",
+    "research_role",
+    "strict_oos_evaluation_history",
+    "research_claim_eligible",
+    "research_claim_eligibility_reason",
+    "source_manifest",
+    "dataset",
+    "folds",
+    "pooled_metrics",
+    "selection_gate",
+    "selection_decision",
+    "safety_locks",
+)
 
 
 class DevelopmentSelectionError(ValueError):
@@ -195,6 +215,7 @@ def _development_report_contract(
         "schema_version",
         "protocol_version",
         "code_revision",
+        "source_identity",
         "run_at",
         "candidate_id",
         "candidate",
@@ -218,9 +239,10 @@ def _development_report_contract(
     except experiments.RecommendationExperimentError as exc:
         raise DevelopmentSelectionError("development report run_at is invalid") from exc
     if (
-        report.get("schema_version") != "1.0"
+        report.get("schema_version") != "1.1"
         or report.get("protocol_version") != "development_walk_forward_v1"
         or report.get("code_revision") != current_identity["revision"]
+        or report.get("source_identity") != current_identity
         or report.get("research_role") != "development"
         or report.get("strict_oos_evaluation_history") is not False
         or report.get("research_claim_eligible") is not False
@@ -260,6 +282,41 @@ def _development_report_contract(
     return candidate_id, contract, source_manifest
 
 
+def _replay_development_report(
+    report: dict[str, Any], candidate_id: str, identity: Callable[[], dict[str, Any]]
+) -> dict[str, Any]:
+    """Recompute development evidence in memory from its checksum-locked manifest."""
+
+    from trading_bot.recommendations.walk_forward import (
+        RecommendationWalkForwardError,
+        build_development_walk_forward_report,
+    )
+
+    source_manifest = report["source_manifest"]
+    try:
+        return build_development_walk_forward_report(
+            Path(source_manifest["path"]),
+            candidate_id,
+            BotSettings(),
+            identity=identity,
+        )
+    except (KeyError, RecommendationWalkForwardError) as exc:
+        raise DevelopmentSelectionError("development report deterministic replay failed") from exc
+
+
+def _validate_deterministic_replay(
+    report: dict[str, Any],
+    candidate_id: str,
+    identity: Callable[[], dict[str, Any]],
+    replay: Callable[[dict[str, Any], str, Callable[[], dict[str, Any]]], dict[str, Any]],
+) -> None:
+    recomputed = replay(report, candidate_id, identity)
+    if not isinstance(recomputed, dict) or any(
+        recomputed.get(key) != report.get(key) for key in _REPLAY_KEYS
+    ):
+        raise DevelopmentSelectionError("development report does not match deterministic replay")
+
+
 def create_development_selection(
     report_path: Path,
     output_path: Path,
@@ -267,6 +324,9 @@ def create_development_selection(
     overwrite: bool,
     now: Callable[[], datetime] | None = None,
     identity: Callable[[], dict[str, Any]] = source_identity,
+    replay: Callable[[dict[str, Any], str, Callable[[], dict[str, Any]]], dict[str, Any]] = (
+        _replay_development_report
+    ),
 ) -> dict[str, Any]:
     """Seal one selected development policy; reject ``no_policy_selected`` results."""
 
@@ -286,6 +346,7 @@ def create_development_selection(
     )
     if csv_sha256(manifest_file) != _sha(source_manifest.get("sha256"), "development manifest SHA"):
         raise DevelopmentSelectionError("development manifest checksum does not match report")
+    _validate_deterministic_replay(report, candidate_id, identity, replay)
     current_revision = current_identity["revision"]
     if output_file.exists() and not overwrite:
         raise DevelopmentSelectionError(
@@ -319,6 +380,9 @@ def validate_development_selection(
     candidate_id: str,
     *,
     identity: Callable[[], dict[str, Any]] = source_identity,
+    replay: Callable[[dict[str, Any], str, Callable[[], dict[str, Any]]], dict[str, Any]] = (
+        _replay_development_report
+    ),
 ) -> tuple[dict[str, Any], str]:
     """Validate the selection artifact before any strict-OOS artifact is opened."""
 
@@ -386,4 +450,5 @@ def validate_development_selection(
         or report_manifest != artifact["development_manifest"]
     ):
         raise DevelopmentSelectionError("selection artifact development report is inconsistent")
+    _validate_deterministic_replay(report, selected_id, identity, replay)
     return artifact, csv_sha256(artifact_file)

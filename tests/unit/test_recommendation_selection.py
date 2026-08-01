@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +10,7 @@ import pytest
 
 from trading_bot.data.csv_store import csv_sha256
 from trading_bot.recommendations import experiments, selection, walk_forward
+from trading_bot.settings import BotSettings
 
 _IDENTITY: dict[str, Any] = {
     "schema_version": "1.0",
@@ -76,9 +79,10 @@ def _development_report(
             "selected_candidate_id": candidate_id if decision == "selected" else None,
         }
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "protocol_version": "development_walk_forward_v1",
         "code_revision": _IDENTITY["revision"],
+        "source_identity": _IDENTITY,
         "run_at": "2026-01-01T00:00:00Z",
         "candidate_id": candidate_id,
         "candidate": experiments._CANDIDATES[candidate_id],
@@ -120,18 +124,38 @@ def _paths(tmp_path: Path) -> tuple[Path, Path, Path]:
     return manifest, report, artifact
 
 
+def _replay(
+    expected: dict[str, Any],
+) -> Callable[[dict[str, Any], str, Callable[[], dict[str, Any]]], dict[str, Any]]:
+    return lambda *_: deepcopy(expected)
+
+
 def _create(report: Path, artifact: Path, tmp_path: Path) -> dict[str, Any]:
+    expected = json.loads(report.read_text(encoding="utf-8"))
     return selection.create_development_selection(
         report.relative_to(tmp_path),
         artifact.relative_to(tmp_path),
         overwrite=False,
         identity=_identity,
+        replay=_replay(expected),
     )
 
 
-def _validate(artifact: Path, tmp_path: Path) -> tuple[dict[str, Any], str]:
+def _validate(
+    artifact: Path, tmp_path: Path, expected: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], str]:
+    expected_report = (
+        expected
+        if expected is not None
+        else json.loads(
+            (tmp_path / "reports/research/walk-forward/baseline.json").read_text(encoding="utf-8")
+        )
+    )
     return selection.validate_development_selection(
-        artifact.relative_to(tmp_path), "baseline_ema_volume_atr_v1", identity=_identity
+        artifact.relative_to(tmp_path),
+        "baseline_ema_volume_atr_v1",
+        identity=_identity,
+        replay=_replay(expected_report),
     )
 
 
@@ -177,6 +201,7 @@ def test_fabricated_selected_artifact_cannot_authorize_no_policy_report(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     manifest, report, artifact = _paths(tmp_path)
+    expected = json.loads(report.read_text(encoding="utf-8"))
     _create(report, artifact, tmp_path)
     _write_json(report, _development_report(manifest, gate_passed=False, decision="selected"))
     payload = json.loads(artifact.read_text(encoding="utf-8"))
@@ -184,7 +209,90 @@ def test_fabricated_selected_artifact_cannot_authorize_no_policy_report(
     artifact.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(selection.DevelopmentSelectionError, match="did not select"):
-        _validate(artifact, tmp_path)
+        _validate(artifact, tmp_path, expected)
+
+
+def test_report_missing_source_identity_is_rejected_before_artifact_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _, report, artifact = _paths(tmp_path)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    del payload["source_identity"]
+    report.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(selection.DevelopmentSelectionError, match="schema"):
+        _create(report, artifact, tmp_path)
+    assert not artifact.exists()
+
+
+def test_synchronously_tampered_metrics_and_selection_are_rejected_by_replay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    manifest, report, artifact = _paths(tmp_path)
+    expected = json.loads(report.read_text(encoding="utf-8"))
+    _create(report, artifact, tmp_path)
+    tampered = _development_report(manifest)
+    for fold in tampered["folds"]:
+        for horizon in fold["metrics"]["horizons"].values():
+            horizon["after_cost_directional_accuracy"] = 0.61
+    for horizon in tampered["pooled_metrics"]["horizons"].values():
+        horizon["statistical_result"]["two_sided_95_percent_exact_lower_bound"] = 0.56
+    tampered["selection_gate"] = walk_forward.development_selection_gate(
+        [fold["metrics"] for fold in tampered["folds"]], tampered["pooled_metrics"]
+    )
+    tampered["selection_decision"] = walk_forward.select_candidate(
+        {
+            "baseline_ema_volume_atr_v1": {
+                "fold_metrics": tampered["folds"],
+                "pooled_metrics": tampered["pooled_metrics"],
+                "selection_gate": tampered["selection_gate"],
+            }
+        }
+    )
+    _write_json(report, tampered)
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact_payload["development_report"]["sha256"] = csv_sha256(report)
+    artifact.write_text(json.dumps(artifact_payload), encoding="utf-8")
+
+    with pytest.raises(selection.DevelopmentSelectionError, match="deterministic replay"):
+        _validate(artifact, tmp_path, expected)
+
+
+def test_replay_uses_in_memory_walk_forward_builder_with_locked_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _, report, _ = _paths(tmp_path)
+    expected = json.loads(report.read_text(encoding="utf-8"))
+    observed: dict[str, Any] = {}
+
+    def build(
+        manifest_path: Path,
+        candidate_id: str,
+        settings: BotSettings,
+        *,
+        identity: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
+        observed["manifest_path"] = manifest_path
+        observed["candidate_id"] = candidate_id
+        observed["settings"] = settings
+        observed["identity"] = identity
+        return expected
+
+    from trading_bot.recommendations import walk_forward
+
+    monkeypatch.setattr(walk_forward, "build_development_walk_forward_report", build)
+
+    assert (
+        selection._replay_development_report(expected, "baseline_ema_volume_atr_v1", _identity)
+        == expected
+    )
+    assert observed["manifest_path"] == Path("reports/research/manifests/development.json")
+    assert observed["candidate_id"] == "baseline_ema_volume_atr_v1"
+    assert observed["settings"] == BotSettings()
+    assert observed["identity"] is _identity
 
 
 @pytest.mark.parametrize("tamper", ["candidate", "cost", "report_sha", "manifest_sha"])
