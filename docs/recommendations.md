@@ -102,3 +102,12 @@ Before registering or running another development candidate, follow the pre-regi
 [Development walk-forward protocol v1](recommendation-research.md#development-walk-forward-protocol-v1).
 It keeps 2025 sealed, permits rule-based candidates only within a fixed budget, and treats all
 development results as research selection evidence rather than public accuracy claims.
+
+To execute the registered chronological folds without opening OOS, run:
+
+```powershell
+uv run trading-bot run-recommendation-walk-forward --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/walk-forward/baseline_ema_volume_atr_v1.json
+```
+
+The ignored report is development-only, keeps `research_claim_eligible: false`, and may choose
+only a development policy decision; it is never an OOS or public accuracy report.

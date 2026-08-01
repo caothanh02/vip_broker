@@ -94,9 +94,15 @@ protocol v1 must not be rewritten retroactively.
 
 ### Next action
 
-After this protocol is reviewed and committed, implement a runner that executes these exact v1
-folds against the frozen development manifest. Do not download, freeze, evaluate, or otherwise
-open OOS 2025 as part of this protocol task.
+Execute the registered candidate with the protocol runner after review of its registration:
+
+```powershell
+uv run trading-bot run-recommendation-walk-forward --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/walk-forward/baseline_ema_volume_atr_v1.json
+```
+
+The runner executes these exact v1 folds against the frozen development manifest, writes an
+ignored atomic development-only report, and can select only `selected` or `no_policy_selected`
+within development. It does not download, freeze, evaluate, or otherwise open OOS 2025.
 
 ## Acceptance gates
 
