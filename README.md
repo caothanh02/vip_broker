@@ -32,6 +32,8 @@ train, tune, evaluate, backtest, or enable live trading.
 
 Before any development-only experiment, freeze the audited BTC/USDT 1h development dataset with `trading-bot freeze-recommendation-research --input data/raw/btcusdt_1h_development_2022_2024.csv --output reports/research/manifests/development.json`. The atomic, ignored manifest records CSV and sidecar SHA-256 values, generation, verification mode, and the audited non-tradable interruption. It is provenance for research inputs only, never OOS accuracy evidence.
 
+Run the predeclared development baseline only from that frozen manifest: `trading-bot run-recommendation-experiment --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/experiments/baseline_ema_volume_atr_v1.json`. Its ignored output is development-only research, always has `research_claim_eligible: false`, and cannot be presented as OOS accuracy evidence. See the [experiment registry](docs/recommendation-experiment-registry.md).
+
 Before changing a recommendation rule or filter, follow the [research protocol](docs/recommendation-research.md): 2025 is a sealed holdout, and no recommendation claim is made without sufficient chronological development and OOS evidence.
 
 ## Live mode is locked

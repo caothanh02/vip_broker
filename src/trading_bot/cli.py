@@ -51,6 +51,10 @@ from trading_bot.recommendations.engine import (
     recommendation_json,
     validate_strict_oos_history,
 )
+from trading_bot.recommendations.experiments import (
+    RecommendationExperimentError,
+    run_development_experiment,
+)
 from trading_bot.recommendations.research import ResearchFreezeError, freeze_development_dataset
 from trading_bot.runtime.dry_run import (
     DryRunEngine,
@@ -249,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
     freeze_research.add_argument("--input", type=Path, required=True)
     freeze_research.add_argument("--output", type=Path, required=True)
     freeze_research.add_argument("--overwrite", action="store_true")
+    experiment = subcommands.add_parser("run-recommendation-experiment")
+    experiment.add_argument("--manifest", type=Path, required=True)
+    experiment.add_argument("--candidate", required=True)
+    experiment.add_argument("--output", type=Path, required=True)
+    experiment.add_argument("--overwrite", action="store_true")
     return parser
 
 
@@ -670,6 +679,31 @@ def _freeze_recommendation_research(args: argparse.Namespace) -> None:
     )
 
 
+def _run_recommendation_experiment(args: argparse.Namespace, settings: BotSettings) -> None:
+    result = run_development_experiment(
+        args.manifest,
+        args.candidate,
+        args.output,
+        settings,
+        overwrite=args.overwrite,
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "candidate_id": result["candidate_id"],
+                "research_role": result["research_role"],
+                "strict_oos_evaluation_history": result["strict_oos_evaluation_history"],
+                "research_claim_eligible": result["research_claim_eligible"],
+                "recommendation_count": result["recommendation_count"],
+                "outcome_count": result["outcome_count"],
+                "safety_locks": result["safety_locks"],
+            },
+            indent=2,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -695,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
             _evaluate_recommendations(args)
         elif args.command == "freeze-recommendation-research":
             _freeze_recommendation_research(args)
+        elif args.command == "run-recommendation-experiment":
+            _run_recommendation_experiment(args, settings)
         else:
             print(f"{args.command}: no live activity performed.")
     except (
@@ -708,6 +744,7 @@ def main(argv: list[str] | None = None) -> int:
         BaselineTrainingError,
         DryRunError,
         RecommendationError,
+        RecommendationExperimentError,
         ValueError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)

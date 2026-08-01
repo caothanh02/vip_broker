@@ -79,3 +79,21 @@ report, recommendation history, strict OOS evidence, or an instruction to trade.
 The output is mandatory: it must be a `.json` file directly or recursively under
 `reports/research/manifests/`; traversal, source/docs paths, dataset files, and sidecars are
 rejected before the dataset is read.
+
+## Development experiments
+
+The only initial registered candidate is `baseline_ema_volume_atr_v1`; its hypothesis and fixed
+parameters are listed in the [experiment registry](recommendation-experiment-registry.md). Run it
+only from the frozen development manifest:
+
+```powershell
+uv run trading-bot run-recommendation-experiment --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/experiments/baseline_ema_volume_atr_v1.json
+```
+
+The command revalidates manifest, CSV, metadata, anomaly sidecar, generation, market interruption,
+and closed-candle continuity before causal backfill. Its atomic output must be under ignored
+`reports/research/experiments/`, is always marked `research_role: development`, and forces
+`research_claim_eligible: false`. Development metrics are not strict OOS evidence, public accuracy
+claims, investment advice, or an instruction to trade. The 2025 OOS period remains sealed.
+The candidate also locks its four `Decimal` fee/slippage rates; a local settings override is rejected
+rather than silently producing different metrics under the same candidate ID.
