@@ -29,13 +29,13 @@ from trading_bot.recommendations.engine import (
 )
 from trading_bot.recommendations.selection import (
     DevelopmentSelectionError,
-    source_revision,
+    source_identity,
     validate_development_selection,
 )
 from trading_bot.settings import BotSettings
 
-_MANIFEST_SCHEMA_VERSION = "1.1"
-_REPORT_SCHEMA_VERSION = "1.1"
+_MANIFEST_SCHEMA_VERSION = "1.2"
+_REPORT_SCHEMA_VERSION = "1.2"
 _MANIFEST_DIRECTORY = Path("reports/research/manifests")
 _REPORT_DIRECTORY = Path("reports/research/strict-oos")
 _OOS_START = datetime(2025, 1, 1, tzinfo=UTC)
@@ -236,12 +236,14 @@ def freeze_strict_oos_dataset(
         "research_role": "strict_oos",
         "strict_oos_evaluation_history": True,
         "strict_oos_start": _utc(_OOS_START),
-        "code_revision": source_revision(),
+        "code_revision": selection["code_revision"],
+        "source_identity": selection["source_identity"],
         "selection_artifact": {
             "path": selection_artifact_path.as_posix(),
             "sha256": selection_sha256,
             "candidate_id": selection["candidate_id"],
             "candidate": selection["candidate"],
+            "source_identity": selection["source_identity"],
             "development_report": selection["development_report"],
             "development_manifest": selection["development_manifest"],
         },
@@ -270,6 +272,7 @@ def _manifest_snapshot(
         "strict_oos_evaluation_history",
         "strict_oos_start",
         "code_revision",
+        "source_identity",
         "selection_artifact",
         "dataset",
         "market_interruptions",
@@ -282,11 +285,14 @@ def _manifest_snapshot(
         manifest.get("research_role") != "strict_oos"
         or manifest.get("strict_oos_evaluation_history") is not True
         or _parse_utc(manifest.get("strict_oos_start"), "strict OOS start") != _OOS_START
-        or manifest.get("code_revision") != source_revision()
+        or manifest.get("code_revision") != selection_artifact["code_revision"]
+        or manifest.get("source_identity") != source_identity()
+        or manifest.get("source_identity") != selection_artifact["source_identity"]
         or not isinstance(selection, dict)
         or selection.get("sha256") != selection_sha256
         or selection.get("candidate_id") != selection_artifact["candidate_id"]
         or selection.get("candidate") != selection_artifact["candidate"]
+        or selection.get("source_identity") != selection_artifact["source_identity"]
         or selection.get("development_report") != selection_artifact["development_report"]
         or selection.get("development_manifest") != selection_artifact["development_manifest"]
     ):
@@ -381,12 +387,14 @@ def run_strict_oos_evaluation(
         "research_role": "strict_oos",
         "strict_oos_evaluation_history": True,
         "strict_oos_start": _utc(_OOS_START),
-        "code_revision": source_revision(),
+        "code_revision": selection["code_revision"],
+        "source_identity": selection["source_identity"],
         "selection_artifact": {
             "path": selection_artifact_path.as_posix(),
             "sha256": selection_sha256,
             "candidate_id": selection["candidate_id"],
             "candidate": selection["candidate"],
+            "source_identity": selection["source_identity"],
             "development_report": selection["development_report"],
             "development_manifest": selection["development_manifest"],
         },

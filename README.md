@@ -39,7 +39,10 @@ Execute the pre-registered chronological development folds with `trading-bot run
 Only a development walk-forward report whose predeclared gates select exactly one policy may be
 sealed with `trading-bot seal-development-recommendation-selection`. The ignored selection artifact
 binds the candidate/cost contract, development report and manifest checksums, protocol version, and
-source revision. Both `freeze-strict-oos-recommendation-research` and
+deterministic source identity (revision plus tracked executable-source object IDs). The seal and
+later strict commands fail closed if `src/trading_bot`, `pyproject.toml`, or `uv.lock` has staged,
+unstaged, or untracked changes; ignored reports, caches, and documentation do not affect that
+check. Both `freeze-strict-oos-recommendation-research` and
 `run-strict-oos-recommendation-evaluation` require that artifact before opening an OOS manifest or
 dataset. A `no_policy_selected` result means stop at the safe `NEUTRAL` default and do not open
 OOS data. These research commands never tune a replacement candidate, submit an order, or enable

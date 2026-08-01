@@ -83,9 +83,16 @@ or tuning variants.
 After exactly one policy is selected, seal an immutable development selection artifact before
 opening any strict OOS 2025 history. The artifact binds the selected candidate and complete cost
 contract to the checksum-locked development walk-forward report, frozen development manifest,
-protocol version, and exact source revision. It is accepted only when the report says `selected`;
-`no_policy_selected` means retain the safe `NEUTRAL` default and do not open OOS data. No report
-from OOS 2025 may be read before that artifact is valid.
+protocol version, and deterministic source identity. The sealer recomputes every fold and pooled
+gate from the report evidence and derives the deterministic registry decision; it does not trust a
+standalone `selection_decision` field. It is accepted only when the recomputed result is
+`selected`; `no_policy_selected` means retain the safe `NEUTRAL` default and do not open OOS data.
+No report from OOS 2025 may be read before that artifact is valid.
+
+The source identity is the checked-out revision plus Git object IDs for `src/trading_bot`,
+`pyproject.toml`, and `uv.lock`. Sealing, strict freeze, and strict evaluation fail closed when any
+of those executable inputs has staged, unstaged, or untracked changes. Documentation and ignored
+reports/cache are deliberately outside this check, so they cannot create a false failure.
 
 ### Leakage and overfitting guard
 
@@ -121,8 +128,8 @@ uv run trading-bot run-strict-oos-recommendation-evaluation --manifest reports/r
 ```
 
 The selection artifact, strict manifest, and strict report are ignored artifacts. They lock the
-development selection plus verified dataset and sidecar provenance, and record the exact code
-revision. They cannot alter candidate parameters, costs, features, or the registry. The
+development selection plus verified dataset and sidecar provenance, and record the exact source
+identity. They cannot alter candidate parameters, costs, features, or the registry. The
 evaluation report binds the selection-artifact checksum together with strict provenance and the
 exact statistical gate; it never creates a replacement candidate, submits an order, or
 constitutes investment advice.

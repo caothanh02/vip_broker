@@ -52,6 +52,16 @@ def _recommendation(signal_time: datetime) -> Recommendation:
 
 def _selection() -> dict[str, Any]:
     return {
+        "code_revision": "d" * 40,
+        "source_identity": {
+            "schema_version": "1.0",
+            "revision": "d" * 40,
+            "tracked_objects": {
+                "src/trading_bot": "a" * 40,
+                "pyproject.toml": "b" * 40,
+                "uv.lock": "c" * 40,
+            },
+        },
         "candidate_id": "baseline_ema_volume_atr_v1",
         "candidate": strict_oos.experiments._CANDIDATES["baseline_ema_volume_atr_v1"],
         "development_report": {
@@ -174,12 +184,13 @@ def test_manifest_selection_checksum_mismatch_rejects_before_oos_dataset_read(
 ) -> None:
     selection = _selection()
     manifest = {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "created_at": "2026-01-01T00:00:00Z",
         "research_role": "strict_oos",
         "strict_oos_evaluation_history": True,
         "strict_oos_start": "2025-01-01T00:00:00Z",
         "code_revision": "d" * 40,
+        "source_identity": _selection()["source_identity"],
         "selection_artifact": {"sha256": "0" * 64, **selection},
         "dataset": {},
         "market_interruptions": [],
@@ -187,7 +198,7 @@ def test_manifest_selection_checksum_mismatch_rejects_before_oos_dataset_read(
     }
     monkeypatch.setattr(strict_oos, "_manifest_path", lambda _: tmp_path / "oos.json")
     monkeypatch.setattr(strict_oos, "_read_object", lambda *_: manifest)
-    monkeypatch.setattr(strict_oos, "source_revision", lambda: "d" * 40)
+    monkeypatch.setattr(strict_oos, "source_identity", lambda: _selection()["source_identity"])
     monkeypatch.setattr(
         strict_oos,
         "_verify_oos_dataset",
@@ -198,12 +209,73 @@ def test_manifest_selection_checksum_mismatch_rejects_before_oos_dataset_read(
         strict_oos._manifest_snapshot(tmp_path / "oos.json", selection, "c" * 64)
 
 
+def test_strict_freeze_binds_selection_source_identity_without_reading_real_oos_data(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _allow_selection(monkeypatch)
+    dataset = {
+        "path": "data/raw/oos.csv",
+        "symbol": "BTC/USDT",
+        "timeframe": "1h",
+        "range": {"start": "2025-01-01T00:00:00Z", "end": "2026-01-01T00:00:00Z"},
+        "candle_count": 8760,
+        "csv_sha256": "a" * 64,
+        "metadata_sha256": "b" * 64,
+        "anomaly_sidecar_sha256": "c" * 64,
+        "generation_id": "generation",
+        "validation_status": "valid",
+        "checksum_verification_mode": "official_online",
+    }
+    verified = strict_oos._VerifiedOosInput(tmp_path / "data/raw/oos.csv", [], set(), dataset, [])
+    monkeypatch.setattr(strict_oos, "_inside_workspace", lambda *_: verified.input_path)
+    monkeypatch.setattr(strict_oos, "_verify_oos_dataset", lambda *_: verified)
+
+    manifest = strict_oos.freeze_strict_oos_dataset(
+        Path("data/raw/oos.csv"),
+        Path("reports/research/manifests/oos.json"),
+        Path("reports/research/selections/selected.json"),
+        "baseline_ema_volume_atr_v1",
+        overwrite=False,
+        now=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    assert manifest["code_revision"] == _selection()["code_revision"]
+    assert manifest["source_identity"] == _selection()["source_identity"]
+    assert manifest["selection_artifact"]["source_identity"] == _selection()["source_identity"]
+
+
+def test_dirty_source_selection_validation_blocks_strict_evaluation_before_oos_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def reject_dirty_source(*_args: object, **_kwargs: object) -> tuple[dict[str, Any], str]:
+        raise DevelopmentSelectionError("tracked executable source tree is not clean")
+
+    monkeypatch.setattr(strict_oos, "validate_development_selection", reject_dirty_source)
+    monkeypatch.setattr(
+        strict_oos,
+        "_manifest_snapshot",
+        lambda *_: (_ for _ in ()).throw(AssertionError("OOS manifest must not be read")),
+    )
+
+    with pytest.raises(strict_oos.StrictOosError, match="not clean"):
+        strict_oos.run_strict_oos_evaluation(
+            Path("reports/research/manifests/oos.json"),
+            "baseline_ema_volume_atr_v1",
+            Path("reports/research/strict-oos/result.json"),
+            Path("reports/research/selections/selected.json"),
+            BotSettings(),
+            overwrite=False,
+        )
+
+
 def test_strict_oos_report_binds_selected_artifact_revision_and_incomplete_outcomes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
     _allow_selection(monkeypatch)
-    monkeypatch.setattr(strict_oos, "source_revision", lambda: "d" * 40)
     candles = [_candle(strict_oos._OOS_START + timedelta(hours=index)) for index in range(25)]
     dataset = {
         "path": "data/raw/oos.csv",
@@ -245,6 +317,7 @@ def test_strict_oos_report_binds_selected_artifact_revision_and_incomplete_outco
     assert result["strict_oos_evaluation_history"] is True
     assert result["research_role"] == "strict_oos"
     assert result["code_revision"] == "d" * 40
+    assert result["source_identity"] == _selection()["source_identity"]
     assert result["selection_artifact"]["sha256"] == "c" * 64
     assert result["selection_artifact"]["candidate"] == _selection()["candidate"]
     assert result["metrics"]["strict_oos"] is True
