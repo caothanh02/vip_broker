@@ -97,3 +97,8 @@ and closed-candle continuity before causal backfill. Its atomic output must be u
 claims, investment advice, or an instruction to trade. The 2025 OOS period remains sealed.
 The candidate also locks its four `Decimal` fee/slippage rates; a local settings override is rejected
 rather than silently producing different metrics under the same candidate ID.
+
+Before registering or running another development candidate, follow the pre-registered
+[Development walk-forward protocol v1](recommendation-research.md#development-walk-forward-protocol-v1).
+It keeps 2025 sealed, permits rule-based candidates only within a fixed budget, and treats all
+development results as research selection evidence rather than public accuracy claims.
