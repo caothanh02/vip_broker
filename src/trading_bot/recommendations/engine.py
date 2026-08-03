@@ -24,6 +24,12 @@ from trading_bot.domain.models import (
     RecommendationType,
 )
 from trading_bot.features.pipeline import FEATURE_COLUMNS, FEATURE_SCHEMA_VERSION, build_features
+from trading_bot.recommendations.candidate_rules import (
+    BASELINE_CANDIDATE_ID,
+    TREND_PULLBACK_CANDIDATE_ID,
+    candidate_protocol,
+    is_trend_pullback_ema_atr_candidate,
+)
 from trading_bot.settings import BotSettings
 from trading_bot.strategy.ema_volume_atr import EmaVolumeAtrStrategy
 
@@ -108,14 +114,24 @@ class RecommendationEngine:
         model: ProbabilityModel | None = None,
         require_model: bool = False,
         now: Callable[[], datetime] | None = None,
+        candidate_id: str = BASELINE_CANDIDATE_ID,
     ) -> None:
         if settings.bot_mode == "live":
             raise RecommendationError("live mode is disabled")
+        try:
+            candidate_protocol(candidate_id)
+        except ValueError as exc:
+            raise RecommendationError(
+                "recommendation candidate is unknown or unregistered"
+            ) from exc
+        if candidate_id == TREND_PULLBACK_CANDIDATE_ID and (model is not None or require_model):
+            raise RecommendationError("trend-pullback candidate is rule-only and does not use ML")
         self.settings = settings
         self.strategy = EmaVolumeAtrStrategy(settings)
         self.model = model
         self.require_model = require_model
         self.now = now or (lambda: datetime.now(UTC))
+        self.candidate_id = candidate_id
 
     def recommend(
         self,
@@ -161,8 +177,8 @@ class RecommendationEngine:
                 ),
                 0,
             )
-        signal = self.strategy.entry(features, False, False, False)
-        if signal is None:
+        candidate = self._candidate(features)
+        if candidate is None:
             return RecommendationReport(
                 self._neutral(candle, "no_rule_candidate", created_at=created_at),
                 len(FEATURE_COLUMNS),
@@ -175,7 +191,7 @@ class RecommendationEngine:
         model_result = self._model_result(candle, values, created_at=created_at)
         if model_result is None:
             return RecommendationReport(
-                self._rule_buy(candle, Decimal(str(signal.atr)), created_at=created_at), len(values)
+                self._rule_buy(candle, candidate, created_at=created_at), len(values)
             )
         if isinstance(model_result, Recommendation):
             return RecommendationReport(model_result, len(values))
@@ -200,11 +216,24 @@ class RecommendationEngine:
                 abs(probability - 0.5) * 2,
                 version,
                 reason,
-                Decimal(str(signal.atr)),
+                candidate,
                 created_at=created_at,
             ),
             len(values),
         )
+
+    def _candidate(self, features: pd.DataFrame) -> Decimal | None:
+        """Dispatch a registered rule family without changing the baseline rule."""
+
+        if self.candidate_id == BASELINE_CANDIDATE_ID:
+            signal = self.strategy.entry(features, False, False, False)
+            return Decimal(str(signal.atr)) if signal is not None else None
+        if self.candidate_id == TREND_PULLBACK_CANDIDATE_ID:
+            current, previous = features.iloc[-1], features.iloc[-2]
+            if is_trend_pullback_ema_atr_candidate(current, previous, self.settings):
+                return Decimal(str(current.atr14))
+            return None
+        raise RecommendationError("recommendation candidate is unknown or unregistered")
 
     def _model_result(
         self, candle: Candle, values: Mapping[str, float], *, created_at: datetime | None = None
@@ -258,7 +287,11 @@ class RecommendationEngine:
             None,
             _RULE_CONFIDENCE,
             None,
-            "ema_volume_atr_rule_candidate_rule_only",
+            (
+                "ema_volume_atr_rule_candidate_rule_only"
+                if self.candidate_id == BASELINE_CANDIDATE_ID
+                else "trend_pullback_ema_atr_rule_candidate_rule_only"
+            ),
             atr,
             created_at=created_at,
         )

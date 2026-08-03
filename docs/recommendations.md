@@ -82,7 +82,8 @@ rejected before the dataset is read.
 
 ## Development experiments
 
-The only initial registered candidate is `baseline_ema_volume_atr_v1`; its hypothesis and fixed
+The frozen v1 baseline is `baseline_ema_volume_atr_v1`. Protocol v2 separately pre-registers
+`trend_pullback_ema_atr_v2` but has no result, selection, or OOS claim; its hypothesis and fixed
 parameters are listed in the [experiment registry](recommendation-experiment-registry.md). Run it
 only from the frozen development manifest:
 

@@ -36,6 +36,10 @@ Run the predeclared development baseline only from that frozen manifest: `tradin
 
 Execute the pre-registered chronological development folds with `trading-bot run-recommendation-walk-forward --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/walk-forward/baseline_ema_volume_atr_v1.json`. This writes an ignored development selection report only; it does not open, evaluate, or claim results from sealed OOS 2025.
 
+Protocol v2 pre-registers the rule-only `trend_pullback_ema_atr_v2` candidate without any
+development result or OOS claim. Its candidate contract is immutable, does not alter the v1
+baseline, and retains `NEUTRAL` unless the reviewed future development protocol selects it.
+
 Only a development walk-forward report whose predeclared gates select exactly one policy may be
 sealed with `trading-bot seal-development-recommendation-selection`. The runner itself requires a
 clean deterministic source identity and records it in the report. Sealing then replay-computes the

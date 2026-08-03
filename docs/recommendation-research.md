@@ -124,6 +124,38 @@ The runner executes these exact v1 folds against the frozen development manifest
 ignored atomic development-only report, and can select only `selected` or `no_policy_selected`
 within development. It does not download, freeze, evaluate, or otherwise open OOS 2025.
 
+## Development walk-forward protocol v2
+
+Protocol v1 has already recorded `baseline_ema_volume_atr_v1` as `no_policy_selected`. Protocol
+v2 is a separate immutable protocol: it does not rewrite v1 or select a policy retroactively.
+Development remains exactly `[2022-01-01T00:00:00Z, 2025-01-01T00:00:00Z)`; strict OOS remains
+sealed from `2025-01-01T00:00:00Z`, and no 2025 candle, manifest, report, or metric may be opened
+for a v2 decision.
+
+V2 pre-registers exactly one new rule-based family: `trend_pullback_ema_atr_v2`. Its closed UTC
+1h predicate requires a long trend (close > EMA200 and EMA20 > EMA50), a previous-candle
+pullback at or below EMA20 followed by a current-candle close above EMA20, current volume at least
+1.2× volume SMA20, and positive ATR14. ATR is used only as the existing level/risk reference. The
+candidate emits `BUY_BIAS` only when every condition holds and otherwise emits `NEUTRAL`; it adds
+no `AVOID`, short, ML, threshold, or filter behavior. Its immutable cost contract is entry/exit
+fees `0.001` and entry/exit slippage `0.0005` as `Decimal` values.
+
+V2 uses the same three fixed chronological folds and full after-cost fold/pooled selection gate as
+v1. Because its candidate budget is exactly one, the deterministic selection outcome is either
+that candidate or `no_policy_selected`; no post-result variant may be added. A selected policy
+must still be sealed and replay-verified before any strict OOS input can be read. If it is not
+selected, retain the safe `NEUTRAL` default.
+
+After review and publication of this protocol/code only, the permitted development command is:
+
+```powershell
+uv run trading-bot run-recommendation-walk-forward --manifest reports/research/manifests/development.json --candidate trend_pullback_ema_atr_v2 --output reports/research/walk-forward/trend_pullback_ema_atr_v2.json
+```
+
+This command has not been run by protocol preregistration. Any resulting report remains
+development-only research, not strict OOS evidence, public accuracy, investment advice, or an
+instruction to trade.
+
 ## Strict OOS baseline evaluation
 
 After one immutable candidate contract is selected by development governance, seal the report

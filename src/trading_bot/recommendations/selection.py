@@ -11,6 +11,7 @@ from typing import Any
 
 from trading_bot.data.csv_store import csv_sha256, write_json_atomic
 from trading_bot.recommendations import experiments
+from trading_bot.recommendations.candidate_rules import candidate_protocol
 from trading_bot.settings import BotSettings
 
 _SCHEMA_VERSION = "1.1"
@@ -209,7 +210,7 @@ def _selection_evidence(report: dict[str, Any], candidate_id: str) -> dict[str, 
 def _development_report_contract(
     report: dict[str, Any], current_identity: dict[str, Any]
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
-    """Validate every provenance-bearing part of a v1 walk-forward report."""
+    """Validate every provenance-bearing part of a registered walk-forward report."""
 
     expected = {
         "schema_version",
@@ -240,7 +241,6 @@ def _development_report_contract(
         raise DevelopmentSelectionError("development report run_at is invalid") from exc
     if (
         report.get("schema_version") != "1.1"
-        or report.get("protocol_version") != "development_walk_forward_v1"
         or report.get("code_revision") != current_identity["revision"]
         or report.get("source_identity") != current_identity
         or report.get("research_role") != "development"
@@ -250,6 +250,8 @@ def _development_report_contract(
     ):
         raise DevelopmentSelectionError("development report provenance is invalid")
     candidate_id, contract = _candidate(report.get("candidate_id"), report.get("candidate"))
+    if report.get("protocol_version") != candidate_protocol(candidate_id):
+        raise DevelopmentSelectionError("development report protocol is invalid")
     source_manifest = report.get("source_manifest")
     if not isinstance(source_manifest, dict) or set(source_manifest) != {"path", "sha256"}:
         raise DevelopmentSelectionError("development report manifest provenance is invalid")
@@ -413,7 +415,7 @@ def validate_development_selection(
         raise DevelopmentSelectionError(
             "selection artifact does not authorize this strict OOS candidate"
         )
-    if artifact.get("protocol_version") != "development_walk_forward_v1":
+    if artifact.get("protocol_version") != candidate_protocol(selected_id):
         raise DevelopmentSelectionError("selection artifact protocol is invalid")
     artifact_revision = artifact.get("code_revision")
     if not isinstance(artifact_revision, str) or not _REVISION.fullmatch(artifact_revision):
