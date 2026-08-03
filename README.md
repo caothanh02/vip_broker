@@ -30,30 +30,19 @@ train, tune, evaluate, backtest, or enable live trading.
 
 `trading-bot recommend --input <validated.csv> --output reports/recommendations/latest.json` produces a BTC/USDT 1h `BUY_BIAS`, `NEUTRAL`, or `AVOID` research recommendation from closed candles. `AVOID` means avoid opening a long/buy; it is never a short instruction. Use `backfill-recommendations --input <validated.csv> --output reports/recommendations/history.json` to create an out-of-sample, candle-by-candle history before evaluating it. Strict OOS histories lock their UTC boundary and input checksum to prevent evidence from being mixed. It has no broker, order, balance, or live-trading path. Recommendation outcomes are resolved only once 1h, 4h, or 24h of future closed candles are available and are evaluated after the configured cost model. Run `evaluate-recommendations` on the persisted JSON history for coverage and accuracy; reports with fewer than 30 applicable outcomes are explicitly `inconclusive`. `research_claim_eligible` is never a development claim: it requires checksum-locked strict OOS provenance, at least 100 applicable resolved samples at every horizon, and a two-sided 95% exact Clopper--Pearson lower bound above 50% at every horizon. Evaluation report schema `1.2` records the separate statistical and strict-OOS eligibility gates. This is not financial or investment advice. See [recommendation documentation](docs/recommendations.md).
 
-Before any development-only experiment, freeze the audited BTC/USDT 1h development dataset with `trading-bot freeze-recommendation-research --input data/raw/btcusdt_1h_development_2022_2024.csv --output reports/research/manifests/development.json`. The atomic, ignored manifest records CSV and sidecar SHA-256 values, generation, verification mode, and the audited non-tradable interruption. It is provenance for research inputs only, never OOS accuracy evidence.
+The V1 baseline and V2 trend-pullback development protocols both reached `no_policy_selected`.
+The 2022–2024 development dataset is closed to further candidate research to avoid data-snooping;
+OOS 2025 remains sealed and has not been opened. No selected candidate or sealed selection
+artifact exists, so do not copy or run strict OOS commands. The project default is `NEUTRAL`, with
+no OOS accuracy claim, live trading, broker use, or order submission. Any future research requires
+a separate governance decision and a previously unused independent development range. See the
+[research protocol](docs/recommendation-research.md) and [experiment registry](docs/recommendation-experiment-registry.md).
 
-Run the predeclared development baseline only from that frozen manifest: `trading-bot run-recommendation-experiment --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/experiments/baseline_ema_volume_atr_v1.json`. Its ignored output is development-only research, always has `research_claim_eligible: false`, and cannot be presented as OOS accuracy evidence. See the [experiment registry](docs/recommendation-experiment-registry.md).
-
-Execute the pre-registered chronological development folds with `trading-bot run-recommendation-walk-forward --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/walk-forward/baseline_ema_volume_atr_v1.json`. This writes an ignored development selection report only; it does not open, evaluate, or claim results from sealed OOS 2025.
-
-Protocol v2 pre-registers the rule-only `trend_pullback_ema_atr_v2` candidate without any
-development result or OOS claim. Its candidate contract is immutable, does not alter the v1
-baseline, and retains `NEUTRAL` unless the reviewed future development protocol selects it.
-
-Only a development walk-forward report whose predeclared gates select exactly one policy may be
-sealed with `trading-bot seal-development-recommendation-selection`. The runner itself requires a
-clean deterministic source identity and records it in the report. Sealing then replay-computes the
-same development walk-forward from its checksum-locked manifest in memory before it authorizes
-anything. The ignored selection artifact binds the candidate/cost contract, verified replay,
-development report and manifest checksums, protocol version, and source identity (revision plus
-tracked executable-source object IDs). The runner, seal, and later strict commands fail closed if
-`src/trading_bot`, `pyproject.toml`, or `uv.lock` has staged, unstaged, or untracked changes;
-ignored reports, caches, and documentation do not affect that check. Both
-`freeze-strict-oos-recommendation-research` and
-`run-strict-oos-recommendation-evaluation` require that artifact before opening an OOS manifest or
-dataset. A `no_policy_selected` result means stop at the safe `NEUTRAL` default and do not open
-OOS data. These research commands never tune a replacement candidate, submit an order, or enable
-live trading.
+Strict OOS is a dormant safety boundary, not a currently authorized workflow. It would require a
+clean deterministic source identity and a sealed artifact from exactly one selected development
+candidate before opening any OOS input. V1 and V2 did not produce that artifact, so strict OOS
+commands must not be copied or run. `no_policy_selected` means stop at the safe `NEUTRAL` default;
+it never authorizes a replacement candidate, order submission, or live trading.
 
 Before changing a recommendation rule or filter, follow the [research protocol](docs/recommendation-research.md): 2025 is a sealed holdout, and no recommendation claim is made without sufficient chronological development and OOS evidence.
 
