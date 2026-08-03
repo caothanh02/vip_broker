@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -9,13 +10,14 @@ from typing import Any
 import pytest
 
 from trading_bot.cli import main
+from trading_bot.data.csv_store import csv_sha256
 from trading_bot.domain.models import (
     Candle,
     Recommendation,
     RecommendationOutcomeStatus,
     RecommendationType,
 )
-from trading_bot.recommendations import experiments, walk_forward
+from trading_bot.recommendations import experiments, selection, walk_forward
 from trading_bot.recommendations.engine import (
     RecommendationEngine,
     backfill_recommendations,
@@ -189,6 +191,8 @@ def test_real_strategy_recommendation_is_unchanged_when_future_candles_mutate() 
         )
 
     assert backfill_recommendations(engine, mutated)[candidate_index] == baseline[candidate_index]
+    assert baseline[candidate_index].created_at == baseline[candidate_index].signal_candle_time
+    assert baseline[candidate_index].created_at <= baseline[candidate_index].signal_candle_time
 
 
 @pytest.mark.parametrize(
@@ -356,6 +360,103 @@ def test_runner_writes_development_only_report_with_validation_windows_only(
             overwrite=False,
             identity=_identity,
         )
+
+
+def test_builder_evidence_is_deterministic_and_seals_with_real_replay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A real builder/replay round-trip may differ only in runtime metadata."""
+
+    monkeypatch.chdir(tmp_path)
+    manifest_path = tmp_path / "reports/research/manifests/development.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text('{"schema_version":"1.0"}', encoding="utf-8")
+    snapshot = experiments._VerifiedExperimentInput(
+        manifest_path,
+        tmp_path / "data/raw/development.csv",
+        [
+            _candle(datetime(2022, 1, 1, tzinfo=UTC)),
+            *[_candle(fold.validation_end - timedelta(hours=1)) for fold in walk_forward.FOLDS],
+        ],
+        set(),
+        {
+            "strict_oos_start": "2025-01-01T00:00:00Z",
+            "dataset": {
+                "range": {"start": "2022-01-01T00:00:00Z", "end": "2025-01-01T00:00:00Z"},
+                "path": "data/raw/development.csv",
+                "csv_sha256": "a" * 64,
+                "generation_id": "generation",
+                "candle_count": 4,
+            },
+        },
+        csv_sha256(manifest_path),
+    )
+
+    def fake_backfill(
+        _: RecommendationEngine, candles: list[Candle], __: set[datetime]
+    ) -> list[Recommendation]:
+        fold = next(
+            item for item in walk_forward.FOLDS if candles[-1].close_time == item.validation_end
+        )
+        return [_recommendation(fold.validation_start, fold.identifier)]
+
+    def passing_metrics(recommendations: list[Recommendation], _: list[object]) -> dict[str, Any]:
+        return _metric(
+            sample=100 if len(recommendations) == len(walk_forward.FOLDS) else 30,
+            coverage=0.10,
+            accuracy=0.60,
+            lower=0.51,
+        )
+
+    monkeypatch.setattr(experiments, "_verified_experiment_input", lambda _: snapshot)
+    monkeypatch.setattr(walk_forward, "backfill_recommendations", fake_backfill)
+    monkeypatch.setattr(walk_forward, "evaluate_outcomes", lambda *args: [])
+    monkeypatch.setattr(walk_forward, "_metrics", passing_metrics)
+    first = walk_forward.build_development_walk_forward_report(
+        manifest_path.relative_to(tmp_path),
+        "baseline_ema_volume_atr_v1",
+        BotSettings(),
+        now=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        identity=_identity,
+    )
+    second = walk_forward.build_development_walk_forward_report(
+        manifest_path.relative_to(tmp_path),
+        "baseline_ema_volume_atr_v1",
+        BotSettings(),
+        now=lambda: datetime(2026, 1, 2, tzinfo=UTC),
+        identity=_identity,
+    )
+    assert first["run_at"] != second["run_at"]
+    assert {key: value for key, value in first.items() if key != "run_at"} == {
+        key: value for key, value in second.items() if key != "run_at"
+    }
+
+    report_path = tmp_path / "reports/research/walk-forward/baseline.json"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text(json.dumps(first), encoding="utf-8")
+    replayed = selection._replay_development_report(first, "baseline_ema_volume_atr_v1", _identity)
+    stored = json.loads(report_path.read_text(encoding="utf-8"))
+    assert {key: replayed[key] for key in selection._REPLAY_KEYS} == {
+        key: stored[key] for key in selection._REPLAY_KEYS
+    }
+    artifact_path = tmp_path / "reports/research/selections/baseline.json"
+    created = selection.create_development_selection(
+        report_path.relative_to(tmp_path),
+        artifact_path.relative_to(tmp_path),
+        overwrite=False,
+        identity=_identity,
+    )
+    loaded, _ = selection.validate_development_selection(
+        artifact_path.relative_to(tmp_path),
+        "baseline_ema_volume_atr_v1",
+        identity=_identity,
+    )
+
+    assert created == loaded
+    assert first["selection_decision"] == {
+        "decision": "selected",
+        "selected_candidate_id": "baseline_ema_volume_atr_v1",
+    }
 
 
 def test_dirty_executable_source_blocks_walk_forward_before_manifest_read(

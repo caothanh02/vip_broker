@@ -121,6 +121,8 @@ class RecommendationEngine:
         self,
         candles: Sequence[Candle],
         allowed_missing_open_times: set[datetime] | None = None,
+        *,
+        created_at: datetime | None = None,
     ) -> RecommendationReport:
         items = list(candles)
         if not items:
@@ -138,10 +140,12 @@ class RecommendationEngine:
             )
         latest_segment = segments[-1]
         features = build_features(latest_segment)
-        return self._recommend_from_causal_feature_window(latest_segment[-1], features)
+        return self._recommend_from_causal_feature_window(
+            latest_segment[-1], features, created_at=created_at
+        )
 
     def _recommend_from_causal_feature_window(
-        self, candle: Candle, features: pd.DataFrame
+        self, candle: Candle, features: pd.DataFrame, *, created_at: datetime | None = None
     ) -> RecommendationReport:
         """Recommend from a causal feature window ending at ``candle``."""
 
@@ -150,22 +154,28 @@ class RecommendationEngine:
         if len(features) < 2 or current[needed].isna().any():
             return RecommendationReport(
                 self._neutral(
-                    candle, "insufficient_feature_history", "insufficient_feature_history"
+                    candle,
+                    "insufficient_feature_history",
+                    "insufficient_feature_history",
+                    created_at=created_at,
                 ),
                 0,
             )
         signal = self.strategy.entry(features, False, False, False)
         if signal is None:
             return RecommendationReport(
-                self._neutral(candle, "no_rule_candidate"), len(FEATURE_COLUMNS)
+                self._neutral(candle, "no_rule_candidate", created_at=created_at),
+                len(FEATURE_COLUMNS),
             )
         values = {column: float(current[column]) for column in FEATURE_COLUMNS}
         if not all(math.isfinite(value) for value in values.values()):
-            return RecommendationReport(self._neutral(candle, "non_finite_features"), 0)
-        model_result = self._model_result(candle, values)
+            return RecommendationReport(
+                self._neutral(candle, "non_finite_features", created_at=created_at), 0
+            )
+        model_result = self._model_result(candle, values, created_at=created_at)
         if model_result is None:
             return RecommendationReport(
-                self._rule_buy(candle, Decimal(str(signal.atr))), len(values)
+                self._rule_buy(candle, Decimal(str(signal.atr)), created_at=created_at), len(values)
             )
         if isinstance(model_result, Recommendation):
             return RecommendationReport(model_result, len(values))
@@ -191,31 +201,41 @@ class RecommendationEngine:
                 version,
                 reason,
                 Decimal(str(signal.atr)),
+                created_at=created_at,
             ),
             len(values),
         )
 
     def _model_result(
-        self, candle: Candle, values: Mapping[str, float]
+        self, candle: Candle, values: Mapping[str, float], *, created_at: datetime | None = None
     ) -> tuple[float, str] | Recommendation | None:
         if self.model is None:
             return (
-                self._neutral(candle, "model_required_but_missing") if self.require_model else None
+                self._neutral(candle, "model_required_but_missing", created_at=created_at)
+                if self.require_model
+                else None
             )
         if self.model.feature_schema_version != FEATURE_SCHEMA_VERSION:
-            return self._neutral(candle, "model_feature_schema_mismatch")
+            return self._neutral(candle, "model_feature_schema_mismatch", created_at=created_at)
         if not self.model.production_eligible or self.model.live_trading_enabled:
-            return self._neutral(candle, "model_not_eligible_for_recommendations")
+            return self._neutral(
+                candle, "model_not_eligible_for_recommendations", created_at=created_at
+            )
         try:
             probability = float(self.model.probability_up(values))
         except (TypeError, ValueError) as exc:
             raise RecommendationError("recommendation model inference failed") from exc
         if not math.isfinite(probability) or not 0 <= probability <= 1:
-            return self._neutral(candle, "model_probability_invalid")
+            return self._neutral(candle, "model_probability_invalid", created_at=created_at)
         return probability, self.model.model_version
 
     def _neutral(
-        self, candle: Candle, reason: str, data_quality: str = "validated_closed_contiguous"
+        self,
+        candle: Candle,
+        reason: str,
+        data_quality: str = "validated_closed_contiguous",
+        *,
+        created_at: datetime | None = None,
     ) -> Recommendation:
         return self._create(
             candle,
@@ -226,9 +246,12 @@ class RecommendationEngine:
             reason,
             None,
             data_quality,
+            created_at=created_at,
         )
 
-    def _rule_buy(self, candle: Candle, atr: Decimal) -> Recommendation:
+    def _rule_buy(
+        self, candle: Candle, atr: Decimal, *, created_at: datetime | None = None
+    ) -> Recommendation:
         return self._create(
             candle,
             RecommendationType.BUY_BIAS,
@@ -237,6 +260,7 @@ class RecommendationEngine:
             None,
             "ema_volume_atr_rule_candidate_rule_only",
             atr,
+            created_at=created_at,
         )
 
     def _create(
@@ -249,6 +273,8 @@ class RecommendationEngine:
         reason: str,
         atr: Decimal | None,
         data_quality: str = "validated_closed_contiguous",
+        *,
+        created_at: datetime | None = None,
     ) -> Recommendation:
         identifier = hashlib.sha256(
             f"BTC/USDT|1h|{_utc(candle.close_time)}|{FEATURE_SCHEMA_VERSION}".encode()
@@ -256,7 +282,7 @@ class RecommendationEngine:
         entry = candle.close if kind != RecommendationType.AVOID else None
         return Recommendation(
             identifier,
-            self.now().astimezone(UTC),
+            (created_at or self.now()).astimezone(UTC),
             candle.close_time,
             "BTC/USDT",
             "1h",
@@ -570,7 +596,9 @@ def backfill_recommendations(
         features = build_features(segment)
         recommendations.extend(
             engine._recommend_from_causal_feature_window(
-                segment[index], features.iloc[max(0, index - 1) : index + 1].copy()
+                segment[index],
+                features.iloc[max(0, index - 1) : index + 1].copy(),
+                created_at=segment[index].close_time,
             ).recommendation
             for index in range(len(segment))
         )
@@ -712,6 +740,10 @@ def accuracy_report(
 
 def recommendation_json(item: Recommendation) -> dict[str, Any]:
     payload = asdict(item)
+    # Keep the serialized evidence stable across JSON write/read/replay.  The
+    # domain model intentionally uses an immutable tuple, whereas JSON arrays
+    # always deserialize as lists.
+    payload["horizons"] = list(item.horizons)
     payload["created_at"] = _utc(item.created_at)
     payload["signal_candle_time"] = _utc(item.signal_candle_time)
     payload["recommendation"] = item.recommendation.value

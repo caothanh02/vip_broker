@@ -128,6 +128,8 @@ replayed from the checksum-locked development manifest in memory; changing JSON 
 `selection_decision` alone cannot authorize OOS access. The report and artifact share a source
 identity that locks the revision and tracked executable inputs (`src/trading_bot`, `pyproject.toml`,
 and `uv.lock`), which must be clean for the runner, sealing, and strict use.
+`run_at` is runtime metadata and can differ between runs; historical recommendation `created_at`
+is the causal decision-candle close time and remains in the strict full-evidence replay.
 
 ## Strict OOS evaluation
 

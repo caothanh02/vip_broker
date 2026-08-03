@@ -100,6 +100,9 @@ report's checksum-locked frozen development manifest, with the recorded candidat
 The replay stays in memory and never overwrites a report, history, or artifact. Its folds, pooled
 metrics, selection gate, decision, provenance, and safety locks must match the submitted report
 exactly. A mutable JSON metric is therefore never sufficient to authorize strict OOS access.
+`run_at` is runtime metadata only and may differ between runs. Historical recommendation
+`created_at` values are instead the causal decision-candle close times, so they remain part of the
+fully replayed fold evidence rather than introducing wall-clock variability.
 
 ### Leakage and overfitting guard
 
