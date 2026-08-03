@@ -56,6 +56,19 @@ from trading_bot.recommendations.experiments import (
     run_development_experiment,
 )
 from trading_bot.recommendations.research import ResearchFreezeError, freeze_development_dataset
+from trading_bot.recommendations.selection import (
+    DevelopmentSelectionError,
+    create_development_selection,
+)
+from trading_bot.recommendations.strict_oos import (
+    StrictOosError,
+    freeze_strict_oos_dataset,
+    run_strict_oos_evaluation,
+)
+from trading_bot.recommendations.walk_forward import (
+    RecommendationWalkForwardError,
+    run_development_walk_forward,
+)
 from trading_bot.runtime.dry_run import (
     DryRunEngine,
     DryRunError,
@@ -258,6 +271,27 @@ def build_parser() -> argparse.ArgumentParser:
     experiment.add_argument("--candidate", required=True)
     experiment.add_argument("--output", type=Path, required=True)
     experiment.add_argument("--overwrite", action="store_true")
+    walk_forward = subcommands.add_parser("run-recommendation-walk-forward")
+    walk_forward.add_argument("--manifest", type=Path, required=True)
+    walk_forward.add_argument("--candidate", required=True)
+    walk_forward.add_argument("--output", type=Path, required=True)
+    walk_forward.add_argument("--overwrite", action="store_true")
+    freeze_oos = subcommands.add_parser("freeze-strict-oos-recommendation-research")
+    freeze_oos.add_argument("--input", type=Path, required=True)
+    freeze_oos.add_argument("--output", type=Path, required=True)
+    freeze_oos.add_argument("--selection-artifact", type=Path, required=True)
+    freeze_oos.add_argument("--candidate", required=True)
+    freeze_oos.add_argument("--overwrite", action="store_true")
+    selection = subcommands.add_parser("seal-development-recommendation-selection")
+    selection.add_argument("--report", type=Path, required=True)
+    selection.add_argument("--output", type=Path, required=True)
+    selection.add_argument("--overwrite", action="store_true")
+    strict_oos = subcommands.add_parser("run-strict-oos-recommendation-evaluation")
+    strict_oos.add_argument("--manifest", type=Path, required=True)
+    strict_oos.add_argument("--candidate", required=True)
+    strict_oos.add_argument("--output", type=Path, required=True)
+    strict_oos.add_argument("--selection-artifact", type=Path, required=True)
+    strict_oos.add_argument("--overwrite", action="store_true")
     return parser
 
 
@@ -704,6 +738,92 @@ def _run_recommendation_experiment(args: argparse.Namespace, settings: BotSettin
     )
 
 
+def _run_recommendation_walk_forward(args: argparse.Namespace, settings: BotSettings) -> None:
+    result = run_development_walk_forward(
+        args.manifest,
+        args.candidate,
+        args.output,
+        settings,
+        overwrite=args.overwrite,
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "protocol_version": result["protocol_version"],
+                "candidate_id": result["candidate_id"],
+                "research_role": result["research_role"],
+                "strict_oos_evaluation_history": result["strict_oos_evaluation_history"],
+                "research_claim_eligible": result["research_claim_eligible"],
+                "selection_decision": result["selection_decision"],
+                "safety_locks": result["safety_locks"],
+            },
+            indent=2,
+        )
+    )
+
+
+def _freeze_strict_oos_recommendation_research(args: argparse.Namespace) -> None:
+    manifest = freeze_strict_oos_dataset(
+        args.input, args.output, args.selection_artifact, args.candidate, overwrite=args.overwrite
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "research_role": manifest["research_role"],
+                "strict_oos_evaluation_history": manifest["strict_oos_evaluation_history"],
+                "candle_count": manifest["dataset"]["candle_count"],
+                "safety_locks": manifest["safety_locks"],
+            },
+            indent=2,
+        )
+    )
+
+
+def _seal_development_recommendation_selection(args: argparse.Namespace) -> None:
+    artifact = create_development_selection(args.report, args.output, overwrite=args.overwrite)
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "candidate_id": artifact["candidate_id"],
+                "protocol_version": artifact["protocol_version"],
+                "code_revision": artifact["code_revision"],
+                "strict_oos_authorized": artifact["strict_oos_authorized"],
+            },
+            indent=2,
+        )
+    )
+
+
+def _run_strict_oos_recommendation_evaluation(
+    args: argparse.Namespace, settings: BotSettings
+) -> None:
+    result = run_strict_oos_evaluation(
+        args.manifest,
+        args.candidate,
+        args.output,
+        args.selection_artifact,
+        settings,
+        overwrite=args.overwrite,
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(args.output),
+                "candidate_id": result["candidate_id"],
+                "research_role": result["research_role"],
+                "research_claim_eligible": result["research_claim_eligible"],
+                "recommendation_count": result["recommendation_count"],
+                "outcome_count": result["outcome_count"],
+                "safety_locks": result["safety_locks"],
+            },
+            indent=2,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -731,6 +851,14 @@ def main(argv: list[str] | None = None) -> int:
             _freeze_recommendation_research(args)
         elif args.command == "run-recommendation-experiment":
             _run_recommendation_experiment(args, settings)
+        elif args.command == "run-recommendation-walk-forward":
+            _run_recommendation_walk_forward(args, settings)
+        elif args.command == "freeze-strict-oos-recommendation-research":
+            _freeze_strict_oos_recommendation_research(args)
+        elif args.command == "seal-development-recommendation-selection":
+            _seal_development_recommendation_selection(args)
+        elif args.command == "run-strict-oos-recommendation-evaluation":
+            _run_strict_oos_recommendation_evaluation(args, settings)
         else:
             print(f"{args.command}: no live activity performed.")
     except (
@@ -740,11 +868,14 @@ def main(argv: list[str] | None = None) -> int:
         CsvDataError,
         DataCoverageError,
         ResearchFreezeError,
+        DevelopmentSelectionError,
+        StrictOosError,
         DatasetBuildError,
         BaselineTrainingError,
         DryRunError,
         RecommendationError,
         RecommendationExperimentError,
+        RecommendationWalkForwardError,
         ValueError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)

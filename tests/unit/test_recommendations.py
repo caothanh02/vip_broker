@@ -63,7 +63,10 @@ def candles(count: int = 210) -> list[Candle]:
 def causal_backfill_reference(
     engine: RecommendationEngine, items: list[Candle]
 ) -> list[Recommendation]:
-    return [engine.recommend(items[: index + 1]).recommendation for index in range(len(items))]
+    return [
+        engine.recommend(items[: index + 1], created_at=items[index].close_time).recommendation
+        for index in range(len(items))
+    ]
 
 
 def real_candidate_candles() -> list[Candle]:

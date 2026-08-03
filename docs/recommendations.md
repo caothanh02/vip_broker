@@ -97,3 +97,46 @@ and closed-candle continuity before causal backfill. Its atomic output must be u
 claims, investment advice, or an instruction to trade. The 2025 OOS period remains sealed.
 The candidate also locks its four `Decimal` fee/slippage rates; a local settings override is rejected
 rather than silently producing different metrics under the same candidate ID.
+
+Before registering or running another development candidate, follow the pre-registered
+[Development walk-forward protocol v1](recommendation-research.md#development-walk-forward-protocol-v1).
+It keeps 2025 sealed, permits rule-based candidates only within a fixed budget, and treats all
+development results as research selection evidence rather than public accuracy claims.
+
+To execute the registered chronological folds without opening OOS, run:
+
+```powershell
+uv run trading-bot run-recommendation-walk-forward --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/walk-forward/baseline_ema_volume_atr_v1.json
+```
+
+The ignored report is development-only, keeps `research_claim_eligible: false`, and may choose
+only a development policy decision; it is never an OOS or public accuracy report.
+
+If—and only if—the development report says `selected`, seal it before any strict OOS input is
+opened:
+
+```powershell
+uv run trading-bot seal-development-recommendation-selection --report reports/research/walk-forward/selected_candidate.json --output reports/research/selections/selected_candidate.json
+```
+
+The ignored artifact binds the exact candidate/cost contract, development report and manifest
+checksums, protocol version, and code revision. `no_policy_selected` is not sealable: it means
+stay at the research-safe `NEUTRAL` default and do not read OOS data. Strict OOS freeze and
+evaluation require this artifact before they read an OOS manifest, CSV, metadata, or anomaly
+sidecar. The artifact is issued only after the runner's fold and pooled gate evidence is
+replayed from the checksum-locked development manifest in memory; changing JSON metrics or a
+`selection_decision` alone cannot authorize OOS access. The report and artifact share a source
+identity that locks the revision and tracked executable inputs (`src/trading_bot`, `pyproject.toml`,
+and `uv.lock`), which must be clean for the runner, sealing, and strict use.
+`run_at` is runtime metadata and can differ between runs; historical recommendation `created_at`
+is the causal decision-candle close time and remains in the strict full-evidence replay.
+
+## Strict OOS evaluation
+
+Strict OOS evaluation uses a separately frozen, checksum-verified BTC/USDT 1h dataset for
+`[2025-01-01T00:00:00Z, 2026-01-01T00:00:00Z)`. It evaluates only the already registered immutable
+candidate and cost contract; it cannot tune, replace, or reject a candidate to create another one.
+Both the strict manifest and report are ignored and must be placed under `reports/research/`.
+`research_claim_eligible` is true only when strict provenance and every existing statistical gate
+pass, including the bound development-selection artifact and matching source revision. The report
+remains research output, not investment advice or a trading instruction.

@@ -34,6 +34,23 @@ Before any development-only experiment, freeze the audited BTC/USDT 1h developme
 
 Run the predeclared development baseline only from that frozen manifest: `trading-bot run-recommendation-experiment --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/experiments/baseline_ema_volume_atr_v1.json`. Its ignored output is development-only research, always has `research_claim_eligible: false`, and cannot be presented as OOS accuracy evidence. See the [experiment registry](docs/recommendation-experiment-registry.md).
 
+Execute the pre-registered chronological development folds with `trading-bot run-recommendation-walk-forward --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/walk-forward/baseline_ema_volume_atr_v1.json`. This writes an ignored development selection report only; it does not open, evaluate, or claim results from sealed OOS 2025.
+
+Only a development walk-forward report whose predeclared gates select exactly one policy may be
+sealed with `trading-bot seal-development-recommendation-selection`. The runner itself requires a
+clean deterministic source identity and records it in the report. Sealing then replay-computes the
+same development walk-forward from its checksum-locked manifest in memory before it authorizes
+anything. The ignored selection artifact binds the candidate/cost contract, verified replay,
+development report and manifest checksums, protocol version, and source identity (revision plus
+tracked executable-source object IDs). The runner, seal, and later strict commands fail closed if
+`src/trading_bot`, `pyproject.toml`, or `uv.lock` has staged, unstaged, or untracked changes;
+ignored reports, caches, and documentation do not affect that check. Both
+`freeze-strict-oos-recommendation-research` and
+`run-strict-oos-recommendation-evaluation` require that artifact before opening an OOS manifest or
+dataset. A `no_policy_selected` result means stop at the safe `NEUTRAL` default and do not open
+OOS data. These research commands never tune a replacement candidate, submit an order, or enable
+live trading.
+
 Before changing a recommendation rule or filter, follow the [research protocol](docs/recommendation-research.md): 2025 is a sealed holdout, and no recommendation claim is made without sufficient chronological development and OOS evidence.
 
 ## Live mode is locked
