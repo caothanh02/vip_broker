@@ -156,7 +156,7 @@ This command has not been run by protocol preregistration. Any resulting report 
 development-only research, not strict OOS evidence, public accuracy, investment advice, or an
 instruction to trade.
 
-## Strict OOS baseline evaluation
+## Strict OOS selected-candidate evaluation
 
 After one immutable candidate contract is selected by development governance, seal the report
 first, then evaluate it once on the separate `[2025-01-01T00:00:00Z, 2026-01-01T00:00:00Z)`
@@ -165,9 +165,14 @@ CSV, metadata, or anomaly sidecar:
 
 ```powershell
 uv run trading-bot seal-development-recommendation-selection --report reports/research/walk-forward/selected_candidate.json --output reports/research/selections/selected_candidate.json
-uv run trading-bot freeze-strict-oos-recommendation-research --input data/raw/btcusdt_1h_strict_oos_2025.csv --output reports/research/manifests/strict_oos_2025.json --selection-artifact reports/research/selections/selected_candidate.json --candidate baseline_ema_volume_atr_v1
-uv run trading-bot run-strict-oos-recommendation-evaluation --manifest reports/research/manifests/strict_oos_2025.json --candidate baseline_ema_volume_atr_v1 --selection-artifact reports/research/selections/selected_candidate.json --output reports/research/strict-oos/baseline_ema_volume_atr_v1_2025.json
+uv run trading-bot freeze-strict-oos-recommendation-research --input data/raw/btcusdt_1h_strict_oos_2025.csv --output reports/research/manifests/strict_oos_2025.json --selection-artifact reports/research/selections/selected_candidate.json --candidate <selected_candidate_id>
+uv run trading-bot run-strict-oos-recommendation-evaluation --manifest reports/research/manifests/strict_oos_2025.json --candidate <selected_candidate_id> --selection-artifact reports/research/selections/selected_candidate.json --output reports/research/strict-oos/<selected_candidate_id>_2025.json
 ```
+
+`<selected_candidate_id>` must exactly match the candidate ID bound in the sealed development
+selection artifact. It must never be inferred from the v1 baseline or v2 registration. Without a
+valid artifact for that exact candidate, strict OOS commands fail closed before opening any OOS
+input.
 
 The selection artifact, strict manifest, and strict report are ignored artifacts. They lock the
 verified deterministic development replay plus dataset and sidecar provenance, and record the
