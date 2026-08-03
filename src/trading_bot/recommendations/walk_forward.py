@@ -22,6 +22,7 @@ from trading_bot.domain.models import (
     RecommendationType,
 )
 from trading_bot.recommendations import experiments
+from trading_bot.recommendations.candidate_rules import candidate_protocol
 from trading_bot.recommendations.engine import (
     HORIZONS,
     RecommendationEngine,
@@ -320,7 +321,7 @@ def build_development_walk_forward_report(
     fold_results: list[dict[str, Any]] = []
     all_recommendations: list[Recommendation] = []
     all_outcomes: list[RecommendationOutcome] = []
-    engine = RecommendationEngine(settings)
+    engine = RecommendationEngine(settings, candidate_id=candidate_id)
     for fold in FOLDS:
         context = _fold_candles(snapshot.candles, fold)
         generated = backfill_recommendations(engine, context, snapshot.missing_open_times)
@@ -363,7 +364,7 @@ def build_development_walk_forward_report(
     run_time = (now or (lambda: datetime.now(UTC)))().astimezone(UTC)
     result: dict[str, Any] = {
         "schema_version": _WALK_FORWARD_SCHEMA_VERSION,
-        "protocol_version": PROTOCOL_VERSION,
+        "protocol_version": candidate_protocol(candidate_id),
         "code_revision": current_identity["revision"],
         "source_identity": current_identity,
         "run_at": _utc(run_time),

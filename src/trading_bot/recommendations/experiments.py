@@ -25,6 +25,7 @@ from trading_bot.data.csv_store import (
 )
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle
+from trading_bot.recommendations.candidate_rules import TREND_PULLBACK_CANDIDATE_ID
 from trading_bot.recommendations.engine import (
     RecommendationEngine,
     RecommendationHistoryProvenance,
@@ -60,7 +61,27 @@ _CANDIDATES: dict[str, dict[str, Any]] = {
             "entry_slippage_rate": "0.0005",
             "exit_slippage_rate": "0.0005",
         },
-    }
+    },
+    TREND_PULLBACK_CANDIDATE_ID: {
+        "hypothesis": (
+            "a closed-candle EMA200/EMA20-EMA50 trend pullback reclaim with volume "
+            "confirmation creates a measurable BUY_BIAS / NEUTRAL baseline"
+        ),
+        "parameters": {
+            "ema_fast": 20,
+            "ema_slow": 50,
+            "ema_trend": 200,
+            "volume_window": 20,
+            "volume_multiplier": 1.2,
+            "atr_window": 14,
+        },
+        "cost_model": {
+            "entry_fee_rate": "0.001",
+            "exit_fee_rate": "0.001",
+            "entry_slippage_rate": "0.0005",
+            "exit_slippage_rate": "0.0005",
+        },
+    },
 }
 
 
@@ -427,7 +448,9 @@ def run_development_experiment(
     if resolved_output.exists() and not overwrite:
         raise RecommendationExperimentError("experiment output already exists; pass --overwrite")
     recommendations = backfill_recommendations(
-        RecommendationEngine(settings), snapshot.candles, snapshot.missing_open_times
+        RecommendationEngine(settings, candidate_id=candidate_id),
+        snapshot.candles,
+        snapshot.missing_open_times,
     )
     outcomes = evaluate_outcomes(
         recommendations, snapshot.candles, settings, snapshot.missing_open_times

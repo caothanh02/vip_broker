@@ -45,3 +45,36 @@ complete predeclared parameter and cost contract, intended v1 folds, development
 and deterministic regression test. Do not tune a candidate, cost assumption, confidence value, or
 threshold after viewing a fold or any 2025 OOS result. The 2025 strict OOS period remains sealed
 until exactly one development-selected policy is frozen.
+
+## Development walk-forward protocol v2 registration
+
+Protocol v1 completed with `baseline_ema_volume_atr_v1` as `no_policy_selected`. Protocol v2 is a
+new immutable governance record; it does not alter the v1 candidate, folds, report, or decision.
+It retains the development-only `[2022-01-01T00:00:00Z, 2025-01-01T00:00:00Z)` dataset and keeps
+all 2025 OOS data sealed.
+
+- Candidate budget: exactly one new rule-based candidate, `trend_pullback_ema_atr_v2`. No other
+  v2 candidate or parameter variant is permitted.
+- ML, probability filters, and post-result tuning are prohibited.
+- Intended folds, selection gate, and deterministic tie-break are the three chronological folds
+  and predeclared gates in [protocol v2](recommendation-research.md#development-walk-forward-protocol-v2).
+- A v2 report can authorize strict OOS only if its sole candidate is `selected`; otherwise retain
+  the safe `NEUTRAL` default and do not open OOS data.
+
+## `trend_pullback_ema_atr_v2`
+
+| Field | Value |
+| --- | --- |
+| Candidate ID | `trend_pullback_ema_atr_v2` |
+| Status | pre-registered; not executed |
+| Created | 2026-08-03 |
+| Dataset role | development only |
+| Hypothesis | A closed-candle trend pullback/reclaim with volume confirmation creates a measurable `BUY_BIAS` / `NEUTRAL` baseline. |
+| Rationale | Test one rule family distinct from the EMA20/EMA50 crossover baseline without adding features or ML. |
+| Immutable predicate | Current close > EMA200 and EMA20 > EMA50; previous close <= EMA20; current close > EMA20; current volume >= 1.2×volume SMA20; ATR14 > 0. |
+| Output | `BUY_BIAS` only when every predicate is true; otherwise `NEUTRAL`. It never creates `AVOID` or a short instruction. |
+| Predeclared parameters | EMA 20/50/200; volume SMA 20 with multiplier 1.2; ATR 14 for levels/risk reference only. |
+| Predeclared cost model | Entry/exit fee `0.001`; entry/exit slippage `0.0005`, matched as `Decimal` values. |
+| Intended folds | The three chronological development protocol v2 folds; no 2025 candle. |
+| Deterministic regression | `tests/unit/test_trend_pullback_candidate.py` verifies the exact predicate, closed/gap handling, future-candle invariance, baseline dispatch, costs, and safety isolation. |
+| Selection rule | Exactly one v2 candidate; it must pass every predeclared fold and pooled gate. No selection retains `NEUTRAL`; it is never an OOS or public accuracy claim. |

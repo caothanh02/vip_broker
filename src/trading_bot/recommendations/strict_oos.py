@@ -363,7 +363,9 @@ def run_strict_oos_evaluation(
     if resolved_output.exists() and not overwrite:
         raise StrictOosError("strict OOS report already exists; pass --overwrite after validation")
     recommendations = backfill_recommendations(
-        RecommendationEngine(settings), verified.candles, verified.missing_open_times
+        RecommendationEngine(settings, candidate_id=candidate_id),
+        verified.candles,
+        verified.missing_open_times,
     )
     outcomes: list[RecommendationOutcome] = evaluate_outcomes(
         recommendations, verified.candles, settings, verified.missing_open_times
