@@ -100,6 +100,16 @@ def test_operational_status_verifies_identity_interruptions_and_neutral_locks(
     assert payload["dataset"]["symbol"] == "BTC/USDT"
     assert payload["dataset"]["timeframe"] == "1h"
     assert payload["dataset"]["candle_count"] == 3
+    assert payload["dataset"]["source"].startswith("Binance Vision")
+    assert payload["dataset"]["requested_range"] == {
+        "start": "2023-03-24T11:00:00Z",
+        "end": "2023-03-24T15:00:00Z",
+        "candle_count": 4,
+    }
+    assert payload["dataset"]["stored_range"] == {
+        "start": "2023-03-24T11:00:00Z",
+        "end": "2023-03-24T15:00:00Z",
+    }
     assert payload["dataset"]["checksums"]["metadata_csv_checksum_verified"] is True
     assert payload["dataset"]["checksums"]["anomaly_sidecar_checksum_verified"] is True
     assert payload["dataset"]["checksums"]["verification_mode"] == "official_online"
@@ -120,6 +130,9 @@ def test_operational_status_verifies_identity_interruptions_and_neutral_locks(
         "v2": "no_policy_selected",
     }
     assert payload["safety_locks"]["strict_oos_2025"] == {"sealed": True, "executed": False}
+    assert payload["safety_locks"]["strict_oos_sealed"] is True
+    assert payload["safety_locks"]["strict_oos_evaluated"] is False
+    assert payload["safety_locks"]["ml_inference_used"] is False
     assert json.loads(Path("reports/operations/status.json").read_text(encoding="utf-8")) == payload
 
 
@@ -139,6 +152,19 @@ def test_operational_status_rejects_tampered_or_missing_artifacts_before_publish
         target.unlink()
 
     with pytest.raises(OperationalSafetyError):
+        operational_status(audited_dataset, output, overwrite=False)
+
+    assert not output.exists()
+
+
+def test_operational_status_rejects_duplicate_raw_timestamp_before_publish(
+    audited_dataset: Path,
+) -> None:
+    output = Path("reports/operations/status.json")
+    lines = audited_dataset.read_text(encoding="utf-8").splitlines()
+    audited_dataset.write_text("\n".join([*lines, lines[-1]]) + "\n", encoding="utf-8")
+
+    with pytest.raises(OperationalSafetyError, match="duplicate source timestamp"):
         operational_status(audited_dataset, output, overwrite=False)
 
     assert not output.exists()

@@ -9,6 +9,7 @@ status artifacts.
 from __future__ import annotations
 
 import ast
+import csv
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from trading_bot.data.csv_store import (
+    CSV_FIELDS,
     CsvDataError,
     csv_sha256,
     read_candles,
@@ -160,10 +162,18 @@ def _safety_locks() -> dict[str, Any]:
             "v2": "no_policy_selected",
         },
         "strict_oos_2025": {"sealed": True, "executed": False},
+        "strict_oos_sealed": True,
+        "strict_oos_evaluated": False,
         "live_trading_enabled": False,
         "broker_used": False,
         "orders_submitted": False,
         "ml_used": False,
+        "ml_inference_used": False,
+        "recommendation_engine_used": False,
+        "risk_engine_used": False,
+        "dry_run_broker_used": False,
+        "authenticated_binance_api_used": False,
+        "network_used": False,
     }
 
 
@@ -181,6 +191,28 @@ def _interruption_status(report: dict[str, Any]) -> list[dict[str, Any]]:
             raise OperationalSafetyError("anomaly sidecar interruption identity is invalid")
         result.append({"event_id": event_id, "missing_open_times": missing, "tradable": False})
     return result
+
+
+def _reject_raw_duplicate_timestamps(path: Path) -> None:
+    """Reject duplicate source rows before the shared reader can merge them."""
+
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != CSV_FIELDS:
+                return
+            timestamps: set[str] = set()
+            for row in reader:
+                timestamp = row.get("open_time")
+                if not isinstance(timestamp, str):
+                    return
+                if timestamp in timestamps:
+                    raise OperationalSafetyError("dataset contains duplicate source timestamp")
+                timestamps.add(timestamp)
+    except OperationalSafetyError:
+        raise
+    except OSError as exc:
+        raise OperationalSafetyError("could not inspect dataset source rows") from exc
 
 
 def operational_status(
@@ -208,6 +240,7 @@ def operational_status(
         )
     report = _read_object(anomaly_path, "anomaly sidecar")
     try:
+        _reject_raw_duplicate_timestamps(csv_path)
         if not verify_metadata_checksum(csv_path):
             raise OperationalSafetyError("metadata CSV checksum is required")
         missing = verified_missing_open_times(csv_path)
@@ -224,7 +257,18 @@ def operational_status(
         raise OperationalSafetyError("metadata and anomaly sidecar generation mismatch")
     generation_id = metadata.get("generation_id")
     verification_mode = metadata.get("checksum_verification_mode")
-    if not isinstance(generation_id, str) or not isinstance(verification_mode, str):
+    source = metadata.get("source")
+    requested_start = metadata.get("requested_start")
+    effective_end = metadata.get("effective_end")
+    requested_count = metadata.get("requested_range_candle_count")
+    if (
+        not isinstance(generation_id, str)
+        or not isinstance(verification_mode, str)
+        or not isinstance(source, str)
+        or not isinstance(requested_start, str)
+        or not isinstance(effective_end, str)
+        or not isinstance(requested_count, int)
+    ):
         raise OperationalSafetyError("metadata identity is invalid")
     interruptions = _interruption_status(report)
     created_at = (now or (lambda: datetime.now(UTC)))().astimezone(UTC)
@@ -238,7 +282,16 @@ def operational_status(
             "path": input_path.as_posix(),
             "symbol": candles[0].symbol,
             "timeframe": candles[0].timeframe,
-            "range": {"start": _utc(candles[0].open_time), "end": _utc(candles[-1].close_time)},
+            "source": source,
+            "requested_range": {
+                "start": requested_start,
+                "end": effective_end,
+                "candle_count": requested_count,
+            },
+            "stored_range": {
+                "start": _utc(candles[0].open_time),
+                "end": _utc(candles[-1].close_time),
+            },
             "candle_count": len(candles),
             "generation_id": generation_id,
             "checksums": {

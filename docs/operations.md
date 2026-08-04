@@ -15,7 +15,8 @@ uv run trading-bot audit-safety --output reports/operations/safety-audit.json
 canonical `<csv>.metadata.json` and `<csv>.anomalies.json` sidecars. Before publication it verifies
 the metadata-to-CSV checksum, sidecar identity/checksum/generation, closed UTC BTC/USDT 1h candle
 validation, OHLCV continuity, and any audited interruption. Its JSON includes dataset identity,
-range/count, freshness from the last closed candle, checksum verification mode, and a clear
+source, requested/stored range and count, freshness from the last closed candle, checksum
+verification mode, and a clear
 distinction between continuous tradability and audited non-tradable intervals.
 
 `audit-safety` reports stable machine-readable findings about this bounded operational path. It is
