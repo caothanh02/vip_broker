@@ -24,6 +24,7 @@ reports/dry_run/*
 data/dry_run/*
 reports/recommendations/*
 reports/research/
+reports/operations/
 reports/*.json
 !reports/**/.gitkeep
 *.db

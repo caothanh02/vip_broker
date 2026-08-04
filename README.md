@@ -44,6 +44,18 @@ candidate before opening any OOS input. V1 and V2 did not produce that artifact,
 commands must not be copied or run. `no_policy_selected` means stop at the safe `NEUTRAL` default;
 it never authorizes a replacement candidate, order submission, or live trading.
 
+## Neutral-only operational status
+
+`trading-bot operational-status --input <validated.csv> --output reports/operations/status.json`
+verifies a local BTC/USDT 1h CSV plus its canonical metadata and anomaly sidecars, then publishes
+an atomic, ignored status JSON. It reports identity/checksum state, candle range/count, freshness,
+and any audited non-tradable interruption. It never downloads data, runs a recommendation,
+backfill, walk-forward, experiment, or OOS evaluation. `trading-bot audit-safety --output
+reports/operations/safety-audit.json` records the bounded runtime safety contract. Both commands
+remain read-only with respect to data and do not load settings, credentials, brokers, orders, ML,
+or network clients. They are observability only—not trading, prediction, investment advice, or
+research/OOS evidence. See [operations documentation](docs/operations.md).
+
 Before changing a recommendation rule or filter, follow the [research protocol](docs/recommendation-research.md): 2025 is a sealed holdout, and no recommendation claim is made without sufficient chronological development and OOS evidence.
 
 ## Live mode is locked

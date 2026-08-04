@@ -11,12 +11,8 @@ from dataclasses import asdict
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from trading_bot.backtest.engine import CandleBacktester
-from trading_bot.data.binance import BinancePublicClient
-from trading_bot.data.binance_historical import BinanceDataError, BinanceHistoricalDataClient
-from trading_bot.data.binance_vision import BinanceVisionError, BinanceVisionHistoricalClient
 from trading_bot.data.csv_store import (
     CsvDataError,
     contains_non_tradable_intervals,
@@ -26,59 +22,167 @@ from trading_bot.data.csv_store import (
     verify_metadata_checksum,
     write_json_atomic,
 )
-from trading_bot.data.historical import (
-    DataCoverageError,
-    download_historical_csv,
-    download_vision_historical_csv,
-    summary_json,
-)
 from trading_bot.data.validation import CandleValidationError, validate_candles
 from trading_bot.domain.models import Candle, Trade
-from trading_bot.ml.baseline import BaselineTrainingError, train_logistic_baseline
-from trading_bot.ml.dataset import DatasetBuildError, build_ml_dataset
-from trading_bot.monitoring.health import create_app
-from trading_bot.recommendations.engine import (
-    RecommendationEngine,
-    RecommendationError,
-    RecommendationHistoryProvenance,
-    RecommendationHistoryStore,
-    accuracy_report,
-    backfill_recommendations,
-    evaluate_outcomes,
-    merge_outcomes,
-    merge_recommendations,
-    outcome_json,
-    recommendation_json,
-    validate_strict_oos_history,
-)
-from trading_bot.recommendations.experiments import (
-    RecommendationExperimentError,
-    run_development_experiment,
-)
-from trading_bot.recommendations.research import ResearchFreezeError, freeze_development_dataset
-from trading_bot.recommendations.selection import (
-    DevelopmentSelectionError,
-    create_development_selection,
-)
-from trading_bot.recommendations.strict_oos import (
-    StrictOosError,
-    freeze_strict_oos_dataset,
-    run_strict_oos_evaluation,
-)
-from trading_bot.recommendations.walk_forward import (
-    RecommendationWalkForwardError,
-    run_development_walk_forward,
-)
-from trading_bot.runtime.dry_run import (
-    DryRunEngine,
-    DryRunError,
-    DryRunService,
-    DryRunStateStore,
-    replay,
-)
-from trading_bot.settings import BotSettings, load_settings
+from trading_bot.operations import OperationalSafetyError, audit_safety, operational_status
+
+if TYPE_CHECKING:
+    from trading_bot.backtest.engine import CandleBacktester
+    from trading_bot.data.binance import BinancePublicClient
+    from trading_bot.data.binance_historical import BinanceDataError, BinanceHistoricalDataClient
+    from trading_bot.data.binance_vision import BinanceVisionError, BinanceVisionHistoricalClient
+    from trading_bot.data.historical import (
+        DataCoverageError,
+        download_historical_csv,
+        download_vision_historical_csv,
+        summary_json,
+    )
+    from trading_bot.ml.baseline import BaselineTrainingError, train_logistic_baseline
+    from trading_bot.ml.dataset import DatasetBuildError, build_ml_dataset
+    from trading_bot.monitoring.health import create_app
+    from trading_bot.recommendations.engine import (
+        RecommendationEngine,
+        RecommendationError,
+        RecommendationHistoryProvenance,
+        RecommendationHistoryStore,
+        accuracy_report,
+        backfill_recommendations,
+        evaluate_outcomes,
+        merge_outcomes,
+        merge_recommendations,
+        outcome_json,
+        recommendation_json,
+        validate_strict_oos_history,
+    )
+    from trading_bot.recommendations.experiments import (
+        RecommendationExperimentError,
+        run_development_experiment,
+    )
+    from trading_bot.recommendations.research import ResearchFreezeError, freeze_development_dataset
+    from trading_bot.recommendations.selection import (
+        DevelopmentSelectionError,
+        create_development_selection,
+    )
+    from trading_bot.recommendations.strict_oos import (
+        StrictOosError,
+        freeze_strict_oos_dataset,
+        run_strict_oos_evaluation,
+    )
+    from trading_bot.recommendations.walk_forward import (
+        RecommendationWalkForwardError,
+        run_development_walk_forward,
+    )
+    from trading_bot.runtime.dry_run import (
+        DryRunEngine,
+        DryRunError,
+        DryRunService,
+        DryRunStateStore,
+        replay,
+    )
+    from trading_bot.settings import BotSettings, load_settings
+else:
+    # Keep historical CLI dependency seams available to embedders/tests without
+    # importing their implementation for an operational-status/audit invocation.
+    BinanceVisionHistoricalClient = None
+    freeze_development_dataset = None
+    load_settings = None
+    run_development_experiment = None
+    run_development_walk_forward = None
 
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+
+
+def _load_non_operational_dependencies() -> None:
+    """Defer non-observability imports until after a status/audit command exits."""
+
+    # Existing tests and embedding callers may inject a command dependency directly into
+    # this module.  Import what a normal command needs, then put those deliberate
+    # overrides back rather than silently changing the command contract.
+    preexisting = {name: value for name, value in globals().items() if value is not None}
+    global BaselineTrainingError, BinanceDataError, BinanceHistoricalDataClient, BinancePublicClient
+    global BinanceVisionError, BinanceVisionHistoricalClient, CandleBacktester, DataCoverageError
+    global DatasetBuildError, DevelopmentSelectionError, DryRunEngine, DryRunError, DryRunService
+    global \
+        DryRunStateStore, \
+        RecommendationEngine, \
+        RecommendationError, \
+        RecommendationExperimentError
+    global \
+        RecommendationHistoryProvenance, \
+        RecommendationHistoryStore, \
+        RecommendationWalkForwardError
+    global ResearchFreezeError, StrictOosError, accuracy_report, backfill_recommendations
+    global build_ml_dataset, create_app, create_development_selection, download_historical_csv
+    global download_vision_historical_csv, evaluate_outcomes, freeze_development_dataset
+    global \
+        freeze_strict_oos_dataset, \
+        load_settings, \
+        merge_outcomes, \
+        merge_recommendations, \
+        outcome_json
+    global recommendation_json, replay, run_development_experiment, run_development_walk_forward
+    global \
+        run_strict_oos_evaluation, \
+        summary_json, \
+        train_logistic_baseline, \
+        validate_strict_oos_history
+    global BotSettings
+
+    from trading_bot.backtest.engine import CandleBacktester
+    from trading_bot.data.binance import BinancePublicClient
+    from trading_bot.data.binance_historical import BinanceDataError, BinanceHistoricalDataClient
+    from trading_bot.data.binance_vision import BinanceVisionError, BinanceVisionHistoricalClient
+    from trading_bot.data.historical import (
+        DataCoverageError,
+        download_historical_csv,
+        download_vision_historical_csv,
+        summary_json,
+    )
+    from trading_bot.ml.baseline import BaselineTrainingError, train_logistic_baseline
+    from trading_bot.ml.dataset import DatasetBuildError, build_ml_dataset
+    from trading_bot.monitoring.health import create_app
+    from trading_bot.recommendations.engine import (
+        RecommendationEngine,
+        RecommendationError,
+        RecommendationHistoryProvenance,
+        RecommendationHistoryStore,
+        accuracy_report,
+        backfill_recommendations,
+        evaluate_outcomes,
+        merge_outcomes,
+        merge_recommendations,
+        outcome_json,
+        recommendation_json,
+        validate_strict_oos_history,
+    )
+    from trading_bot.recommendations.experiments import (
+        RecommendationExperimentError,
+        run_development_experiment,
+    )
+    from trading_bot.recommendations.research import ResearchFreezeError, freeze_development_dataset
+    from trading_bot.recommendations.selection import (
+        DevelopmentSelectionError,
+        create_development_selection,
+    )
+    from trading_bot.recommendations.strict_oos import (
+        StrictOosError,
+        freeze_strict_oos_dataset,
+        run_strict_oos_evaluation,
+    )
+    from trading_bot.recommendations.walk_forward import (
+        RecommendationWalkForwardError,
+        run_development_walk_forward,
+    )
+    from trading_bot.runtime.dry_run import (
+        DryRunEngine,
+        DryRunError,
+        DryRunService,
+        DryRunStateStore,
+        replay,
+    )
+    from trading_bot.settings import BotSettings, load_settings
+
+    globals().update(preexisting)
 
 
 def fixture() -> list[Candle]:
@@ -221,6 +325,18 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subcommands.add_parser("validate-data")
     validate.add_argument("--input", type=Path, required=True)
     validate.add_argument("--max-age-hours", type=float)
+    operational_status_parser = subcommands.add_parser(
+        "operational-status",
+        help="verify a local dataset and publish read-only neutral-only operational status",
+    )
+    operational_status_parser.add_argument("--input", type=Path, required=True)
+    operational_status_parser.add_argument("--output", type=Path, required=True)
+    operational_status_parser.add_argument("--overwrite", action="store_true")
+    audit_safety_parser = subcommands.add_parser(
+        "audit-safety", help="publish a read-only runtime safety-contract audit"
+    )
+    audit_safety_parser.add_argument("--output", type=Path, required=True)
+    audit_safety_parser.add_argument("--overwrite", action="store_true")
     backtest = subcommands.add_parser("backtest")
     source = backtest.add_mutually_exclusive_group(required=True)
     source.add_argument("--input", type=Path)
@@ -375,6 +491,16 @@ def _validate(args: argparse.Namespace) -> None:
             indent=2,
         )
     )
+
+
+def _operational_status(args: argparse.Namespace) -> None:
+    payload = operational_status(args.input, args.output, overwrite=args.overwrite)
+    print(json.dumps(payload, indent=2))
+
+
+def _audit_safety(args: argparse.Namespace) -> None:
+    payload = audit_safety(args.output, overwrite=args.overwrite)
+    print(json.dumps(payload, indent=2))
 
 
 def _backtest(args: argparse.Namespace, settings: BotSettings) -> None:
@@ -827,6 +953,18 @@ def _run_strict_oos_recommendation_evaluation(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in {"operational-status", "audit-safety"}:
+        try:
+            if args.command == "operational-status":
+                _operational_status(args)
+            else:
+                _audit_safety(args)
+        except OperationalSafetyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    _load_non_operational_dependencies()
     settings = load_settings()
     try:
         if args.command == "download-data":
@@ -876,6 +1014,7 @@ def main(argv: list[str] | None = None) -> int:
         RecommendationError,
         RecommendationExperimentError,
         RecommendationWalkForwardError,
+        OperationalSafetyError,
         ValueError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)

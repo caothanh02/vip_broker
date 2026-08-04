@@ -61,6 +61,11 @@ uv run trading-bot evaluate-recommendations --input reports/recommendations/hist
 The latest recommendation and history are atomic JSON files under ignored `reports/recommendations/`.
 They contain neither credentials nor broker/order identifiers and can be restored on restart.
 
+Operational status is intentionally separate from recommendation generation. Use
+`trading-bot operational-status` and `trading-bot audit-safety` only for read-only local dataset
+and safety-contract observability; they do not create recommendations, accuracy evidence, or
+strict-OOS output. See [operations](operations.md).
+
 ## Freeze development research input
 
 Before a walk-forward experiment, freeze the verified development dataset—not a strict OOS history—with:
