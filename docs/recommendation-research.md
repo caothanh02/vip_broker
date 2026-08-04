@@ -3,6 +3,20 @@
 This protocol governs research-only BTC/USDT 1-hour recommendations. It does not enable live
 trading, broker access, order submission, or API-key use.
 
+## Research-safe decision: candidate research closed
+
+Development protocol v1 recorded `baseline_ema_volume_atr_v1` as `no_policy_selected`, and
+development protocol v2 recorded `trend_pullback_ema_atr_v2` as `no_policy_selected`. The
+`[2022-01-01T00:00:00Z, 2025-01-01T00:00:00Z)` development dataset has therefore been used by two
+protocols and must not be used to try additional rule candidates or variants. This prevents
+data-snooping on the same development period.
+
+Strict OOS 2025 remains sealed and has not been opened. No candidate is selected, so no strict OOS
+command, selection artifact, or further development walk-forward command is authorized. The
+research and product-safe default is `NEUTRAL`; it is not investment advice or a trading
+instruction. New candidate research requires a separate governance decision and a new,
+independent development range that has not already been used for candidate selection.
+
 ## Development walk-forward protocol v1
 
 This is the pre-registered governance protocol for development research. It applies before a new
@@ -112,17 +126,10 @@ solely because a fold or OOS result is unattractive. Any deviation, including a 
 family, altered budget, folds, gates, or tie-breaks, requires a new immutable protocol version;
 protocol v1 must not be rewritten retroactively.
 
-### Next action
+### Historical protocol status
 
-Execute the registered candidate with the protocol runner after review of its registration:
-
-```powershell
-uv run trading-bot run-recommendation-walk-forward --manifest reports/research/manifests/development.json --candidate baseline_ema_volume_atr_v1 --output reports/research/walk-forward/baseline_ema_volume_atr_v1.json
-```
-
-The runner executes these exact v1 folds against the frozen development manifest, writes an
-ignored atomic development-only report, and can select only `selected` or `no_policy_selected`
-within development. It does not download, freeze, evaluate, or otherwise open OOS 2025.
+V1 execution is complete and selected no policy. Do not rerun it or add a variant on its already
+used development dataset.
 
 ## Development walk-forward protocol v2
 
@@ -146,33 +153,14 @@ that candidate or `no_policy_selected`; no post-result variant may be added. A s
 must still be sealed and replay-verified before any strict OOS input can be read. If it is not
 selected, retain the safe `NEUTRAL` default.
 
-After review and publication of this protocol/code only, the permitted development command is:
-
-```powershell
-uv run trading-bot run-recommendation-walk-forward --manifest reports/research/manifests/development.json --candidate trend_pullback_ema_atr_v2 --output reports/research/walk-forward/trend_pullback_ema_atr_v2.json
-```
-
-This command has not been run by protocol preregistration. Any resulting report remains
-development-only research, not strict OOS evidence, public accuracy, investment advice, or an
-instruction to trade.
+V2 execution is complete and selected no policy. Do not rerun it or add a variant on its already
+used development dataset.
 
 ## Strict OOS selected-candidate evaluation
 
-After one immutable candidate contract is selected by development governance, seal the report
-first, then evaluate it once on the separate `[2025-01-01T00:00:00Z, 2026-01-01T00:00:00Z)`
-BTC/USDT 1h dataset. The strict commands validate the artifact before reading any OOS manifest,
-CSV, metadata, or anomaly sidecar:
-
-```powershell
-uv run trading-bot seal-development-recommendation-selection --report reports/research/walk-forward/selected_candidate.json --output reports/research/selections/selected_candidate.json
-uv run trading-bot freeze-strict-oos-recommendation-research --input data/raw/btcusdt_1h_strict_oos_2025.csv --output reports/research/manifests/strict_oos_2025.json --selection-artifact reports/research/selections/selected_candidate.json --candidate <selected_candidate_id>
-uv run trading-bot run-strict-oos-recommendation-evaluation --manifest reports/research/manifests/strict_oos_2025.json --candidate <selected_candidate_id> --selection-artifact reports/research/selections/selected_candidate.json --output reports/research/strict-oos/<selected_candidate_id>_2025.json
-```
-
-`<selected_candidate_id>` must exactly match the candidate ID bound in the sealed development
-selection artifact. It must never be inferred from the v1 baseline or v2 registration. Without a
-valid artifact for that exact candidate, strict OOS commands fail closed before opening any OOS
-input.
+Strict OOS would require exactly one candidate bound in a valid sealed development selection
+artifact. No such artifact exists after V1 and V2, so strict OOS commands must not be copied or
+run. They fail closed before opening any OOS input.
 
 The selection artifact, strict manifest, and strict report are ignored artifacts. They lock the
 verified deterministic development replay plus dataset and sidecar provenance, and record the
