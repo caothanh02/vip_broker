@@ -22,11 +22,16 @@ BASE = datetime(2023, 3, 24, 11, tzinfo=UTC)
 
 def _prepare_audit_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repository = Path(__file__).resolve().parents[2]
-    settings = tmp_path / "src/trading_bot/settings.py"
-    settings.parent.mkdir(parents=True)
-    settings.write_text(
-        (repository / "src/trading_bot/settings.py").read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    for relative in (
+        Path("src/trading_bot/settings.py"),
+        Path("src/trading_bot/cli.py"),
+        Path("src/trading_bot/operations.py"),
+    ):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            (repository / relative).read_text(encoding="utf-8"), encoding="utf-8"
+        )
     (tmp_path / ".gitignore").write_text(
         (repository / ".gitignore").read_text(encoding="utf-8"), encoding="utf-8"
     )
@@ -189,6 +194,87 @@ def test_operational_status_rejects_anomaly_checksum_and_generation_mismatches(
     assert not output.exists()
 
 
+@pytest.mark.parametrize("sidecar", ["metadata", "anomaly"])
+def test_operational_status_rejects_malformed_or_duplicate_key_json(
+    audited_dataset: Path, sidecar: str
+) -> None:
+    output = Path("reports/operations/status.json")
+    path = (
+        audited_dataset.with_name(f"{audited_dataset.name}.metadata.json")
+        if sidecar == "metadata"
+        else audited_dataset.with_suffix(".anomalies.json")
+    )
+    path.write_text('{"generation_id":"first","generation_id":"second"}', encoding="utf-8")
+
+    with pytest.raises(OperationalSafetyError, match="could not read"):
+        operational_status(audited_dataset, output, overwrite=False)
+
+    assert not output.exists()
+
+
+def test_operational_status_rejects_metadata_path_traversal_without_reading_target(
+    audited_dataset: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = Path("reports/operations/status.json")
+    metadata_path = audited_dataset.with_name(f"{audited_dataset.name}.metadata.json")
+    external = Path("external-anomalies.json").resolve()
+    external.write_text('{"untrusted": true}', encoding="utf-8")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["anomaly_report"] = "../external-anomalies.json"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path.resolve() == external:
+            raise AssertionError("metadata-selected external sidecar must not be read")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    with pytest.raises(OperationalSafetyError, match="identity"):
+        operational_status(audited_dataset, output, overwrite=False)
+
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("mutation", ["open_candle", "un_audited_gap"])
+def test_operational_status_rejects_invalid_closed_candle_or_gap(
+    audited_dataset: Path, mutation: str
+) -> None:
+    output = Path("reports/operations/status.json")
+    metadata_path = audited_dataset.with_name(f"{audited_dataset.name}.metadata.json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    lines = audited_dataset.read_text(encoding="utf-8").splitlines()
+    if mutation == "open_candle":
+        lines[1] = lines[1].removesuffix(",true") + ",false"
+    else:
+        del lines[1]
+    audited_dataset.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    metadata["csv_sha256"] = csv_sha256(audited_dataset)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(OperationalSafetyError, match="dataset validation failed"):
+        operational_status(audited_dataset, output, overwrite=False)
+
+    assert not output.exists()
+
+
+def test_operational_status_rechecks_original_artifacts_before_publish(
+    audited_dataset: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = Path("reports/operations/status.json")
+    original_recheck = operations._recheck_snapshot
+
+    def mutate_then_recheck(paths: tuple[Path, Path, Path], digests: tuple[str, str, str]) -> None:
+        paths[0].write_bytes(paths[0].read_bytes() + b"\n")
+        original_recheck(paths, digests)
+
+    monkeypatch.setattr(operations, "_recheck_snapshot", mutate_then_recheck)
+    with pytest.raises(OperationalSafetyError, match="changed after validation"):
+        operational_status(audited_dataset, output, overwrite=False)
+
+    assert not output.exists()
+
+
 @pytest.mark.parametrize(
     "output",
     [
@@ -308,7 +394,7 @@ def test_audit_is_safe_by_default_and_redacts_secret_like_values(
     assert payload["passed"] is True
     assert {item["code"] for item in payload["findings"]} >= {
         "LIVE_MODE_FAIL_CLOSED",
-        "OPERATIONAL_PATH_PROHIBITED_DEPENDENCIES",
+        "CLI_RUNTIME_IMPORT_CLOSURE",
         "NO_CREDENTIALS_REQUIRED",
         "GENERATED_ARTIFACTS_IGNORED",
     }
@@ -321,14 +407,71 @@ def test_audit_fails_when_a_prohibited_dependency_is_detected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _prepare_audit_workspace(tmp_path, monkeypatch)
-    monkeypatch.setattr(operations, "_FORBIDDEN_IMPORT_PARTS", frozenset({"json"}))
+    cli = tmp_path / "src/trading_bot/cli.py"
+    cli.write_text(
+        cli.read_text(encoding="utf-8") + "\nfrom trading_bot.risk.engine import RiskEngine\n",
+        encoding="utf-8",
+    )
     payload = audit_safety(Path("reports/operations/audit.json"), overwrite=False)
 
     assert payload["passed"] is False
     finding = next(
-        item
-        for item in payload["findings"]
-        if item["code"] == "OPERATIONAL_PATH_PROHIBITED_DEPENDENCIES"
+        item for item in payload["findings"] if item["code"] == "CLI_RUNTIME_IMPORT_CLOSURE"
+    )
+    assert finding["status"] == "fail"
+
+
+def test_audit_semantically_rejects_dead_live_lock_strings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_audit_workspace(tmp_path, monkeypatch)
+    settings = Path("src/trading_bot/settings.py")
+    settings.write_text(
+        "class BotSettings:\n"
+        "    def unrelated(self):\n"
+        '        # if self.bot_mode == \\"live\\":\n'
+        '        #     raise ValueError(\\"live mode is deliberately disabled in this build\\")\n'
+        "        return None\n",
+        encoding="utf-8",
+    )
+
+    payload = audit_safety(Path("reports/operations/audit.json"), overwrite=False)
+
+    finding = next(item for item in payload["findings"] if item["code"] == "LIVE_MODE_FAIL_CLOSED")
+    assert finding["status"] == "fail"
+
+
+def test_audit_does_not_read_env_or_emit_secret_like_fixture_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_audit_workspace(tmp_path, monkeypatch)
+    secret = "test-secret-value-7ef3c9"
+    Path(".env").write_text(f"BINANCE_API_SECRET={secret}\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        if path.name == ".env":
+            raise AssertionError("audit must not read .env")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    payload = audit_safety(Path("reports/operations/audit.json"), overwrite=False)
+
+    assert payload["passed"] is True
+    assert secret not in json.dumps(payload)
+
+
+def test_audit_fails_when_a_required_ignore_rule_is_later_negated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare_audit_workspace(tmp_path, monkeypatch)
+    with Path(".gitignore").open("a", encoding="utf-8") as handle:
+        handle.write("\n!reports/operations/status.json\n")
+
+    payload = audit_safety(Path("reports/operations/audit.json"), overwrite=False)
+
+    finding = next(
+        item for item in payload["findings"] if item["code"] == "GENERATED_ARTIFACTS_IGNORED"
     )
     assert finding["status"] == "fail"
 
@@ -336,7 +479,7 @@ def test_audit_fails_when_a_prohibited_dependency_is_detected(
 def test_audit_fails_when_live_lock_or_ignore_coverage_cannot_be_verified(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
+    _prepare_audit_workspace(tmp_path, monkeypatch)
     monkeypatch.setattr(operations, "_live_mode_fail_closed", lambda: False)
     monkeypatch.setattr(operations, "_ignored_artifact_rules", lambda: (False, ["models/*"]))
     payload = audit_safety(Path("reports/operations/audit.json"), overwrite=False)
@@ -346,10 +489,11 @@ def test_audit_fails_when_live_lock_or_ignore_coverage_cannot_be_verified(
 
 
 def test_operational_cli_commands_bypass_non_operational_dependency_loader(
-    audited_dataset: Path, monkeypatch: pytest.MonkeyPatch
+    audited_dataset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import trading_bot.cli as cli
 
+    _prepare_audit_workspace(tmp_path, monkeypatch)
     monkeypatch.setattr(
         cli,
         "_load_non_operational_dependencies",

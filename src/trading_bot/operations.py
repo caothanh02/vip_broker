@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import ast
 import csv
+import hashlib
 import json
+import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,15 +48,26 @@ _REQUIRED_IGNORE_RULES = frozenset(
     {
         "data/raw/*",
         "data/archive_cache/",
+        "data/validated/*",
+        "data/features/*",
+        "data/datasets/*",
+        "data/processed/*",
         "data/dry_run/*",
         "models/*",
+        "reports/backtests/*",
+        "reports/ml/*",
+        "reports/dry_run/*",
         "reports/recommendations/*",
         "reports/research/",
         "reports/operations/",
         "*.db",
         "*.sqlite*",
+        "*.tmp",
+        ".venv/",
+        ".pytest_cache/",
     }
 )
+_AUDITED_MODULES = (Path("src/trading_bot/operations.py"), Path("src/trading_bot/cli.py"))
 
 
 class OperationalSafetyError(ValueError):
@@ -67,12 +80,21 @@ def _utc(value: datetime) -> str:
 
 def _read_object(path: Path, label: str) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise OperationalSafetyError(f"could not read {label}") from exc
     if not isinstance(value, dict):
         raise OperationalSafetyError(f"{label} must be a JSON object")
     return value
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
 
 
 def _workspace() -> Path:
@@ -154,6 +176,41 @@ def _canonical_artifacts(input_path: Path) -> tuple[Path, Path, Path]:
     return csv_path, metadata, anomaly
 
 
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _snapshot_artifacts(paths: tuple[Path, Path, Path]) -> tuple[bytes, bytes, bytes]:
+    """Read each trusted artifact once before validation to prevent mixed generations."""
+
+    try:
+        return tuple(path.read_bytes() for path in paths)  # type: ignore[return-value]
+    except OSError as exc:
+        raise OperationalSafetyError("could not snapshot dataset artifacts") from exc
+
+
+def _write_snapshot(
+    directory: Path, paths: tuple[Path, Path, Path], data: tuple[bytes, bytes, bytes]
+) -> Path:
+    try:
+        for path, content in zip(paths, data, strict=True):
+            (directory / path.name).write_bytes(content)
+    except OSError as exc:
+        raise OperationalSafetyError("could not prepare dataset artifact snapshot") from exc
+    return directory / paths[0].name
+
+
+def _recheck_snapshot(paths: tuple[Path, Path, Path], digests: tuple[str, str, str]) -> None:
+    """Fail closed if an original artifact changed after its validated snapshot."""
+
+    try:
+        current = tuple(csv_sha256(path) for path in paths)
+    except CsvDataError as exc:
+        raise OperationalSafetyError("could not recheck dataset artifacts before publish") from exc
+    if current != digests:
+        raise OperationalSafetyError("dataset artifacts changed after validation")
+
+
 def _safety_locks() -> dict[str, Any]:
     return {
         "default_recommendation": "NEUTRAL",
@@ -233,44 +290,54 @@ def operational_status(
         anomaly_path.resolve(),
     }:
         raise OperationalSafetyError("operational output must not replace an input artifact")
-    metadata = _read_object(metadata_path_value, "metadata sidecar")
-    if metadata.get("anomaly_report") != anomaly_path.name:
-        raise OperationalSafetyError(
-            "metadata anomaly sidecar identity does not match dataset input"
-        )
-    report = _read_object(anomaly_path, "anomaly sidecar")
-    try:
-        _reject_raw_duplicate_timestamps(csv_path)
-        if not verify_metadata_checksum(csv_path):
-            raise OperationalSafetyError("metadata CSV checksum is required")
-        missing = verified_missing_open_times(csv_path)
-        candles = read_candles(csv_path, allowed_missing_open_times=missing)
-        validate_candles(candles, allowed_missing_open_times=missing)
-        csv_digest = csv_sha256(csv_path)
-        anomaly_digest = csv_sha256(anomaly_path)
-        metadata_digest = csv_sha256(metadata_path_value)
-    except (CsvDataError, CandleValidationError) as exc:
-        raise OperationalSafetyError("dataset validation failed") from exc
-    if metadata.get("anomaly_report_sha256") != anomaly_digest:
-        raise OperationalSafetyError("metadata anomaly sidecar checksum mismatch")
-    if metadata.get("generation_id") != report.get("generation_id"):
-        raise OperationalSafetyError("metadata and anomaly sidecar generation mismatch")
-    generation_id = metadata.get("generation_id")
-    verification_mode = metadata.get("checksum_verification_mode")
-    source = metadata.get("source")
-    requested_start = metadata.get("requested_start")
-    effective_end = metadata.get("effective_end")
-    requested_count = metadata.get("requested_range_candle_count")
-    if (
-        not isinstance(generation_id, str)
-        or not isinstance(verification_mode, str)
-        or not isinstance(source, str)
-        or not isinstance(requested_start, str)
-        or not isinstance(effective_end, str)
-        or not isinstance(requested_count, int)
-    ):
-        raise OperationalSafetyError("metadata identity is invalid")
-    interruptions = _interruption_status(report)
+    artifact_paths = (csv_path, metadata_path_value, anomaly_path)
+    snapshot_data = _snapshot_artifacts(artifact_paths)
+    snapshot_digest_items = tuple(_sha256_bytes(item) for item in snapshot_data)
+    snapshot_digests = (
+        snapshot_digest_items[0],
+        snapshot_digest_items[1],
+        snapshot_digest_items[2],
+    )
+    with tempfile.TemporaryDirectory(prefix="trading-bot-operations-") as temporary_directory:
+        snapshot_csv = _write_snapshot(Path(temporary_directory), artifact_paths, snapshot_data)
+        snapshot_metadata = snapshot_csv.with_name(f"{snapshot_csv.name}.metadata.json")
+        snapshot_anomaly = snapshot_csv.with_suffix(".anomalies.json")
+        metadata = _read_object(snapshot_metadata, "metadata sidecar snapshot")
+        if metadata.get("anomaly_report") != snapshot_anomaly.name:
+            raise OperationalSafetyError(
+                "metadata anomaly sidecar identity does not match dataset input"
+            )
+        report = _read_object(snapshot_anomaly, "anomaly sidecar snapshot")
+        try:
+            _reject_raw_duplicate_timestamps(snapshot_csv)
+            if not verify_metadata_checksum(snapshot_csv):
+                raise OperationalSafetyError("metadata CSV checksum is required")
+            missing = verified_missing_open_times(snapshot_csv)
+            candles = read_candles(snapshot_csv, allowed_missing_open_times=missing)
+            validate_candles(candles, allowed_missing_open_times=missing)
+        except (CsvDataError, CandleValidationError) as exc:
+            raise OperationalSafetyError("dataset validation failed") from exc
+        csv_digest, metadata_digest, anomaly_digest = snapshot_digests
+        if metadata.get("anomaly_report_sha256") != anomaly_digest:
+            raise OperationalSafetyError("metadata anomaly sidecar checksum mismatch")
+        if metadata.get("generation_id") != report.get("generation_id"):
+            raise OperationalSafetyError("metadata and anomaly sidecar generation mismatch")
+        generation_id = metadata.get("generation_id")
+        verification_mode = metadata.get("checksum_verification_mode")
+        source = metadata.get("source")
+        requested_start = metadata.get("requested_start")
+        effective_end = metadata.get("effective_end")
+        requested_count = metadata.get("requested_range_candle_count")
+        if (
+            not isinstance(generation_id, str)
+            or not isinstance(verification_mode, str)
+            or not isinstance(source, str)
+            or not isinstance(requested_start, str)
+            or not isinstance(effective_end, str)
+            or not isinstance(requested_count, int)
+        ):
+            raise OperationalSafetyError("metadata identity is invalid")
+        interruptions = _interruption_status(report)
     created_at = (now or (lambda: datetime.now(UTC)))().astimezone(UTC)
     payload: dict[str, Any] = {
         "schema_version": _SCHEMA_VERSION,
@@ -318,6 +385,7 @@ def operational_status(
         raise OperationalSafetyError(
             "operational output already exists; pass --overwrite after validation"
         )
+    _recheck_snapshot(artifact_paths, snapshot_digests)
     try:
         write_json_atomic(resolved_output, payload)
     except OSError as exc:
@@ -325,16 +393,15 @@ def operational_status(
     return payload
 
 
-def _forbidden_imports() -> list[str]:
-    """Inspect this bounded module only; this is a safety check, not certification."""
-
+def _top_level_runtime_imports(path: Path) -> list[str]:
+    """Return real module imports, excluding only ``if TYPE_CHECKING`` branches."""
     try:
-        source = Path(__file__).read_text(encoding="utf-8")
+        source = path.read_text(encoding="utf-8")
         tree = ast.parse(source)
     except (OSError, SyntaxError) as exc:
-        raise OperationalSafetyError("could not inspect operational module imports") from exc
+        raise OperationalSafetyError("could not inspect operational runtime imports") from exc
     imported: set[str] = set()
-    for node in ast.walk(tree):
+    for node in tree.body:
         if isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
@@ -346,33 +413,105 @@ def _forbidden_imports() -> list[str]:
     )
 
 
+def _forbidden_runtime_imports() -> list[str]:
+    result: list[str] = []
+    for module in _AUDITED_MODULES:
+        result.extend(
+            f"{module.as_posix()}:{name}"
+            for name in _top_level_runtime_imports(_workspace() / module)
+        )
+    return result
+
+
 def _live_mode_fail_closed() -> bool:
-    """Boundedly inspect the checked-in settings lock without loading any settings."""
+    """Verify the actual Pydantic validator AST without loading settings or ``.env``."""
 
     settings_path = _workspace() / "src/trading_bot/settings.py"
     try:
         if settings_path.is_symlink() or not settings_path.is_file():
             return False
-        source = settings_path.read_text(encoding="utf-8")
-    except OSError:
+        tree = ast.parse(settings_path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
         return False
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name != "BotSettings":
+            continue
+        for method in node.body:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not any(
+                (isinstance(decorator, ast.Name) and decorator.id == "model_validator")
+                or (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Name)
+                    and decorator.func.id == "model_validator"
+                )
+                for decorator in method.decorator_list
+            ):
+                continue
+            for candidate in ast.walk(method):
+                if not isinstance(candidate, ast.If) or not isinstance(candidate.test, ast.Compare):
+                    continue
+                if not _is_live_mode_test(candidate.test):
+                    continue
+                if any(_is_value_error_raise(item) for item in ast.walk(candidate)):
+                    return True
+    return False
+
+
+def _is_live_mode_test(test: ast.Compare) -> bool:
     return (
-        'if self.bot_mode == "live":' in source
-        and 'raise ValueError("live mode is deliberately disabled in this build")' in source
+        len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Eq)
+        and len(test.comparators) == 1
+        and isinstance(test.left, ast.Attribute)
+        and isinstance(test.left.value, ast.Name)
+        and test.left.value.id == "self"
+        and test.left.attr == "bot_mode"
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value == "live"
+    )
+
+
+def _is_value_error_raise(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name)
+        and node.exc.func.id == "ValueError"
     )
 
 
 def _ignored_artifact_rules() -> tuple[bool, list[str]]:
     try:
-        rules = {
+        rules = [
             line.strip()
             for line in (_workspace() / ".gitignore").read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.lstrip().startswith("#")
-        }
+        ]
     except OSError:
         return False, sorted(_REQUIRED_IGNORE_RULES)
-    missing = sorted(_REQUIRED_IGNORE_RULES - rules)
+    missing = [
+        rule for rule in sorted(_REQUIRED_IGNORE_RULES) if not _rule_remains_ignored(rule, rules)
+    ]
     return not missing, missing
+
+
+def _rule_remains_ignored(rule: str, rules: list[str]) -> bool:
+    try:
+        position = rules.index(rule)
+    except ValueError:
+        return False
+    root = rule.removesuffix("*").rstrip("/")
+    for later in rules[position + 1 :]:
+        if not later.startswith("!"):
+            continue
+        exception = later.removeprefix("!")
+        if exception.endswith(".gitkeep") or exception.endswith("README.md"):
+            continue
+        if exception == rule or exception.removesuffix("*").rstrip("/").startswith(root):
+            return False
+    return True
 
 
 def audit_safety(
@@ -381,7 +520,7 @@ def audit_safety(
     """Publish a bounded, machine-readable safety audit without loading config or Git."""
 
     resolved_output = _status_output_path(output_path, set())
-    forbidden = _forbidden_imports()
+    forbidden = _forbidden_runtime_imports()
     live_mode_locked = _live_mode_fail_closed()
     ignore_rules_present, missing_ignore_rules = _ignored_artifact_rules()
     findings = [
@@ -393,11 +532,13 @@ def audit_safety(
             else "The checked-in live-mode safety lock could not be verified.",
         },
         {
-            "code": "OPERATIONAL_PATH_PROHIBITED_DEPENDENCIES",
+            "code": "CLI_RUNTIME_IMPORT_CLOSURE",
             "status": "pass" if not forbidden else "fail",
-            "detail": "No prohibited operational-module imports detected."
+            "detail": (
+                "No prohibited top-level runtime imports detected in the operational CLI closure."
+            )
             if not forbidden
-            else "Prohibited operational-module imports detected.",
+            else ("Prohibited top-level runtime imports detected in the operational CLI closure."),
         },
         {
             "code": "NO_CREDENTIALS_REQUIRED",
