@@ -31,12 +31,16 @@ train, tune, evaluate, backtest, or enable live trading.
 `trading-bot recommend --input <validated.csv> --output reports/recommendations/latest.json` produces a BTC/USDT 1h `BUY_BIAS`, `NEUTRAL`, or `AVOID` research recommendation from closed candles. `AVOID` means avoid opening a long/buy; it is never a short instruction. Use `backfill-recommendations --input <validated.csv> --output reports/recommendations/history.json` to create an out-of-sample, candle-by-candle history before evaluating it. Strict OOS histories lock their UTC boundary and input checksum to prevent evidence from being mixed. It has no broker, order, balance, or live-trading path. Recommendation outcomes are resolved only once 1h, 4h, or 24h of future closed candles are available and are evaluated after the configured cost model. Run `evaluate-recommendations` on the persisted JSON history for coverage and accuracy; reports with fewer than 30 applicable outcomes are explicitly `inconclusive`. `research_claim_eligible` is never a development claim: it requires checksum-locked strict OOS provenance, at least 100 applicable resolved samples at every horizon, and a two-sided 95% exact Clopper--Pearson lower bound above 50% at every horizon. Evaluation report schema `1.2` records the separate statistical and strict-OOS eligibility gates. This is not financial or investment advice. See [recommendation documentation](docs/recommendations.md).
 
 The V1 baseline and V2 trend-pullback development protocols both reached `no_policy_selected`.
-The 2022–2024 development dataset is closed to further candidate research to avoid data-snooping;
-OOS 2025 remains sealed and has not been opened. No selected candidate or sealed selection
-artifact exists, so do not copy or run strict OOS commands. The project default is `NEUTRAL`, with
-no OOS accuracy claim, live trading, broker use, or order submission. Any future research requires
-a separate governance decision and a previously unused independent development range. See the
-[research protocol](docs/recommendation-research.md) and [experiment registry](docs/recommendation-experiment-registry.md).
+The 2022–2024 development dataset is exhausted and closed to all V3 candidate selection or tuning.
+Protocol V3 is `candidate_preregistered_input_unfrozen`: it has a hypothesis and an independent
+2019–2021 target only, not a dataset, input lock, implementation, execution, report, selection
+artifact, or OOS authorization. OOS 2025 remains sealed and has not been opened. No selected
+candidate or sealed selection artifact exists, so do not copy or run strict OOS commands. The
+project default is `NEUTRAL`, with no OOS accuracy claim, live trading, broker use, or order
+submission. See the
+[research protocol](docs/recommendation-research.md),
+[Protocol V3](docs/recommendation-protocol-v3.md), and
+[experiment registry](docs/recommendation-experiment-registry.md).
 
 Strict OOS is a dormant safety boundary, not a currently authorized workflow. It would require a
 clean deterministic source identity and a sealed artifact from exactly one selected development

@@ -7,15 +7,26 @@ trading, broker access, order submission, or API-key use.
 
 Development protocol v1 recorded `baseline_ema_volume_atr_v1` as `no_policy_selected`, and
 development protocol v2 recorded `trend_pullback_ema_atr_v2` as `no_policy_selected`. The
-`[2022-01-01T00:00:00Z, 2025-01-01T00:00:00Z)` development dataset has therefore been used by two
-protocols and must not be used to try additional rule candidates or variants. This prevents
-data-snooping on the same development period.
+`[2022-01-01T00:00:00Z, 2025-01-01T00:00:00Z)` development dataset is closed to ad-hoc candidate
+research, parameter variants, and retries. This prevents data-snooping on the same development
+period.
 
 Strict OOS 2025 remains sealed and has not been opened. No candidate is selected, so no strict OOS
 command, selection artifact, or further development walk-forward command is authorized. The
 research and product-safe default is `NEUTRAL`; it is not investment advice or a trading
 instruction. New candidate research requires a separate governance decision and a new,
 independent development range that has not already been used for candidate selection.
+
+## Protocol V3 preregistration
+
+Protocol V3 is a candidate hypothesis preregistration only. Its status is
+`candidate_preregistered_input_unfrozen`: it does not change V1/V2 results, authorize execution,
+or make the exhausted 2022--2024 range available again. V3 names an independent future development
+target `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)`, but no dataset, input lock, report, or
+selection artifact exists for it. Its sole candidate, parameters, cost contract, folds, gates,
+failure rule, and OOS seal are locked in
+[the Protocol V3 document](recommendation-protocol-v3.md) and validated config. Only a new,
+checksum-verified input-lock artifact can make V3 eligible for a separately reviewed execution.
 
 ## Development walk-forward protocol v1
 
