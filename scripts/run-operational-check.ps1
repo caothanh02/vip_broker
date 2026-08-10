@@ -128,6 +128,25 @@ function Assert-WorkspaceRegularFile {
     return $fullPath
 }
 
+function Assert-WorkspaceDirectory {
+    param(
+        [Parameter(Mandatory)]
+        [string]$WorkspaceRoot,
+        [Parameter(Mandatory)]
+        [string]$RelativePath,
+        [Parameter(Mandatory)]
+        [string]$Context
+    )
+
+    $fullPath = Assert-PathHasNoReparsePoint `
+        -WorkspaceRoot $WorkspaceRoot -RelativePath $RelativePath -Context $Context
+    $item = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw "$Context must be a normal non-symlink directory: $RelativePath"
+    }
+    return $fullPath
+}
+
 function Assert-ReportPath {
     param(
         [Parameter(Mandatory)]
@@ -141,10 +160,18 @@ function Assert-ReportPath {
         -or -not $RelativePath.EndsWith(".json", [StringComparison]::OrdinalIgnoreCase)) {
         throw "Operational report must be a .json file below $ReportsDirectory"
     }
-    $directory = Split-Path -Parent $RelativePath
-    $null = Assert-PathHasNoReparsePoint `
-        -WorkspaceRoot $WorkspaceRoot -RelativePath $directory -Context "Operational report directory"
+    $reportsRoot = Assert-WorkspaceDirectory `
+        -WorkspaceRoot $WorkspaceRoot -RelativePath "reports" -Context "Reports directory"
+    $operationsPath = [IO.Path]::GetFullPath((Join-Path $WorkspaceRoot $ReportsDirectory))
+    if (Test-Path -LiteralPath $operationsPath) {
+        $null = Assert-WorkspaceDirectory `
+            -WorkspaceRoot $WorkspaceRoot -RelativePath $ReportsDirectory -Context "Operational report directory"
+    }
     $fullPath = [IO.Path]::GetFullPath((Join-Path $WorkspaceRoot $RelativePath))
+    $reportsWithSeparator = "$reportsRoot$([IO.Path]::DirectorySeparatorChar)"
+    if (-not $fullPath.StartsWith($reportsWithSeparator, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Operational report escapes the reports directory"
+    }
     if (Test-Path -LiteralPath $fullPath) {
         throw "Refusing to overwrite existing report: $RelativePath"
     }

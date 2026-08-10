@@ -124,12 +124,14 @@ def _write_windows_fake_commands(bin_dir: Path, *, audit_mode: str, status_mode:
                 'echo %*>> "%FAKE_UV_LOG%"\n',
                 'if /I "%4"=="audit-safety" (\n',
                 '  if /I "' + audit_mode + '"=="missing_report" (echo ' + audit + ") else (\n",
+                '    if not exist "%~dp6" mkdir "%~dp6"\n',
                 '    > "%~6" echo ' + audit + "\n",
                 "    echo " + audit + "\n",
                 "  )\n",
                 "  exit /b 0\n",
                 ")\n",
                 'if /I "%4"=="operational-status" (\n',
+                '  if not exist "%~dp8" mkdir "%~dp8"\n',
                 '  > "%~8" echo ' + status + "\n",
                 "  echo " + status + "\n",
                 "  exit /b 0\n",
@@ -174,6 +176,7 @@ def _run_runner(
     audit_mode: str = "pass",
     status_mode: str = "pass",
     reparse_ancestor: str | None = None,
+    create_operations: bool = True,
 ) -> subprocess.CompletedProcess[str] | None:
     shell = _powershell()
     if shell is None or os.name != "nt":
@@ -188,8 +191,14 @@ def _run_runner(
         reports.mkdir(parents=True)
         _make_junction(workspace / "reports", report_target)
     else:
-        reports = workspace / "reports" / "operations"
-        reports.mkdir(parents=True)
+        reports_root = workspace / "reports"
+        reports_root.mkdir(parents=True)
+        if reparse_ancestor == "operations":
+            report_target = tmp_path / "operations-target"
+            report_target.mkdir()
+            _make_junction(reports_root / "operations", report_target)
+        elif create_operations:
+            (reports_root / "operations").mkdir()
     if reparse_ancestor == "dataset":
         data_target = tmp_path / "data-target"
         artifacts = data_target / "raw"
@@ -247,6 +256,27 @@ def test_runner_requires_parseable_reports_and_only_allows_offline_commands(tmp_
     assert "recommend" not in log
 
 
+def test_runner_bootstraps_missing_operations_directory_only_through_cli(tmp_path: Path) -> None:
+    _source_contract()
+    completed = _run_runner(tmp_path, create_operations=False)
+    if completed is None:
+        return
+    assert completed.returncode == 0, completed.stderr
+    reports = tmp_path / "workspace" / "reports" / "operations"
+    assert sorted(path.suffix for path in reports.iterdir()) == [".json", ".json"]
+    log = (tmp_path / "uv.log").read_text(encoding="utf-8")
+    assert log.count("run --offline trading-bot") == 2
+
+
+def test_runner_rejects_missing_report_on_clean_operations_bootstrap(tmp_path: Path) -> None:
+    _source_contract()
+    completed = _run_runner(tmp_path, audit_mode="missing_report", create_operations=False)
+    if completed is None:
+        return
+    assert completed.returncode != 0
+    assert "pass safety-audit" not in completed.stdout
+
+
 @pytest.mark.parametrize(
     "audit_mode,status_mode", [("missing_report", "pass"), ("pass", "malformed")]
 )
@@ -273,7 +303,7 @@ def test_runner_and_installer_reject_unsafe_paths_and_scheduler_replacement() ->
     )
 
 
-@pytest.mark.parametrize("reparse_ancestor", ["dataset", "report"])
+@pytest.mark.parametrize("reparse_ancestor", ["dataset", "report", "operations"])
 def test_runner_rejects_reparse_ancestor_before_calling_uv(
     tmp_path: Path, reparse_ancestor: str
 ) -> None:
