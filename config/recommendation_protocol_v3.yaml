@@ -1,0 +1,104 @@
+schema_version: "1.1"
+protocol_id: "recommendation_research_v3"
+status: "candidate_preregistered_input_unfrozen"
+goal: "after_cost_buy_bias_and_avoid_quality_not_accuracy_maximization"
+development_target:
+  symbol: "BTC/USDT"
+  timeframe: "1h"
+  timezone: "UTC"
+  start: "2019-01-01T00:00:00Z"
+  end: "2022-01-01T00:00:00Z"
+  audited_interruptions: []
+strict_oos:
+  start: "2025-01-01T00:00:00Z"
+  status: "sealed"
+  evaluation_authorized: false
+  selection_artifact_required: true
+horizons: [1, 4, 24]
+folds:
+  - id: "fold_1"
+    calibration_start: "2019-01-01T00:00:00Z"
+    validation_start: "2020-01-01T00:00:00Z"
+    validation_end: "2020-09-01T00:00:00Z"
+  - id: "fold_2"
+    calibration_start: "2019-01-01T00:00:00Z"
+    validation_start: "2020-09-01T00:00:00Z"
+    validation_end: "2021-05-01T00:00:00Z"
+  - id: "fold_3"
+    calibration_start: "2019-01-01T00:00:00Z"
+    validation_start: "2021-05-01T00:00:00Z"
+    validation_end: "2022-01-01T00:00:00Z"
+candidate:
+  id: "dual_regime_reclaim_avoid_v3"
+  outputs: ["BUY_BIAS", "AVOID", "NEUTRAL"]
+  rules:
+    candle_state: "closed_utc_1h_only"
+    feature_scope: "causal_same_continuous_segment_only"
+    buy_bias:
+      - "close_gt_ema200"
+      - "ema20_gt_ema50"
+      - "previous_close_lte_ema20"
+      - "current_close_gt_ema20"
+      - "current_volume_gte_1_2_times_volume_sma20"
+      - "atr14_gt_zero"
+    avoid:
+      - "close_lt_ema200"
+      - "ema20_lt_ema50"
+      - "previous_close_gte_ema20"
+      - "current_close_lt_ema20"
+      - "current_volume_gte_1_2_times_volume_sma20"
+      - "atr14_gt_zero"
+  parameters:
+    ema_fast: 20
+    ema_slow: 50
+    ema_trend: 200
+    volume_window: 20
+    volume_multiplier: "1.2"
+    atr_window: 14
+  cost_model:
+    entry_fee_rate: "0.001"
+    exit_fee_rate: "0.001"
+    entry_slippage_rate: "0.0005"
+    exit_slippage_rate: "0.0005"
+  ml_allowed: false
+selection_gate:
+  minimum_fold_applicable_resolved: 30
+  minimum_each_direction_count: 10
+  minimum_pooled_applicable_resolved: 100
+  non_neutral_coverage:
+    comparator: "inclusive_range"
+    minimum: "0.01"
+    maximum: "0.50"
+  after_cost_directional_accuracy:
+    comparator: "strictly_greater_than"
+    value: "0.50"
+  mean_after_cost_return:
+    comparator: "strictly_greater_than"
+    value: "0"
+  two_sided_95_percent_exact_lower_bound:
+    comparator: "strictly_greater_than"
+    value: "0.50"
+  requirements_apply_to: "every_fold_every_horizon_and_pooled_every_horizon"
+required_input_lock:
+  status: "unbound"
+  schema_version: "1.0"
+  required_fields:
+    - "protocol_config_sha256"
+    - "frozen_manifest_sha256"
+    - "generation_id"
+    - "csv_sha256"
+    - "metadata_sha256"
+    - "anomaly_sha256"
+    - "symbol"
+    - "timeframe"
+    - "utc_range"
+    - "audited_interruption_ids"
+failure_rule: "any_failure_closes_v3_and_requires_v4_for_a_new_idea"
+safety_locks:
+  live_trading_enabled: false
+  broker_used: false
+  orders_submitted: false
+  risk_engine_used: false
+  dry_run_broker_used: false
+  ml_used: false
+  network_used: false

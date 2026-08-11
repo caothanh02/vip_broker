@@ -5,6 +5,8 @@ __pycache__/
 .pytest_cache/
 .pytest-tmp/
 .pytest-*-tmp/
+.pytest-protocol-v3*/
+.pytest-v3-review*/
 .mypy_cache/
 .ruff_cache/
 data/raw/*
