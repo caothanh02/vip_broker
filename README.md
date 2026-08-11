@@ -32,14 +32,15 @@ train, tune, evaluate, backtest, or enable live trading.
 
 The V1 baseline and V2 trend-pullback development protocols both reached `no_policy_selected`.
 The 2022–2024 development dataset is exhausted and closed to all V3 candidate selection or tuning.
-Protocol V3 is `candidate_preregistered_input_unfrozen`: it has a hypothesis and an independent
-2019–2021 target only, not a dataset, input lock, implementation, execution, report, selection
-artifact, or OOS authorization. OOS 2025 remains sealed and has not been opened. No selected
-candidate or sealed selection artifact exists, so do not copy or run strict OOS commands. The
-project default is `NEUTRAL`, with no OOS accuracy claim, live trading, broker use, or order
-submission. See the
+Protocol V3 is `closed_input_unavailable`: its independent 2019–2021 input could not meet the
+predeclared absolute-continuity requirement. This is not a strategy result; V3 cannot freeze,
+execute, select, or authorize OOS. Protocol V4 is `draft_availability_audit_required`, with no
+candidate or dataset yet; only a mechanical public-archive availability audit may propose a future
+range. OOS 2025 remains sealed and has not been opened. The project default is `NEUTRAL`, with no
+OOS accuracy claim, live trading, broker use, or order submission. See the
 [research protocol](docs/recommendation-research.md),
 [Protocol V3](docs/recommendation-protocol-v3.md), and
+[Protocol V4](docs/recommendation-protocol-v4.md), and
 [experiment registry](docs/recommendation-experiment-registry.md).
 
 Strict OOS is a dormant safety boundary, not a currently authorized workflow. It would require a

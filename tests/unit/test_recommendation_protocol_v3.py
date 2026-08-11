@@ -55,11 +55,11 @@ def _valid_input_lock(protocol: protocol_v3.ProtocolV3) -> dict[str, object]:
     }
 
 
-def test_protocol_v3_is_candidate_preregistration_with_an_independent_unfrozen_target() -> None:
+def test_protocol_v3_is_closed_for_unavailable_independent_input() -> None:
     protocol = protocol_v3.load_protocol_v3(CONFIG_PATH)
 
     assert protocol.protocol_id == "recommendation_research_v3"
-    assert protocol.status == "candidate_preregistered_input_unfrozen"
+    assert protocol.status == "closed_input_unavailable"
     assert protocol.executable is False
     assert protocol.development_start.isoformat() == "2019-01-01T00:00:00+00:00"
     assert protocol.development_end.isoformat() == "2022-01-01T00:00:00+00:00"
@@ -84,6 +84,22 @@ def test_protocol_v3_is_candidate_preregistration_with_an_independent_unfrozen_t
     assert protocol.selection_gate.directional_accuracy_threshold == Decimal("0.50")
     assert protocol.selection_gate.mean_after_cost_return_threshold == Decimal("0")
     assert protocol.selection_gate.confidence_lower_bound_threshold == Decimal("0.50")
+    closure = _mapping(_raw_protocol(), "closure")
+    assert closure["strategy_result_evaluated"] is False
+    assert closure["freeze_authorized"] is False
+    assert closure["execution_authorized"] is False
+    assert closure["selection_authorized"] is False
+    assert closure["strict_oos_authorized"] is False
+    assert closure["verified_binance_vision_findings"] == {
+        "monthly_archive": "BTCUSDT-1h-2019-03.zip",
+        "expected_rows": 744,
+        "observed_rows": 738,
+        "missing_open_start": "2019-03-12T02:00:00Z",
+        "missing_open_end": "2019-03-12T07:00:00Z",
+        "daily_1h_rows": "18/24",
+        "daily_1m_rows": "1080/1440",
+        "official_checksums_verified": True,
+    }
 
 
 def test_protocol_v3_machine_readable_comparators_are_exact() -> None:
@@ -200,7 +216,7 @@ def test_protocol_v3_activation_fails_before_input_lock_or_dataset_access(
 
     monkeypatch.setattr(protocol_v3, "validate_protocol_v3_input_lock", reject_lock_read)
 
-    with pytest.raises(protocol_v3.ProtocolV3Error, match="input-unfrozen"):
+    with pytest.raises(protocol_v3.ProtocolV3Error, match="closed"):
         protocol_v3.require_protocol_v3_execution(protocol, object(), CONFIG_DIGEST)
 
 

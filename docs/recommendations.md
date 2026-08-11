@@ -107,12 +107,12 @@ rather than silently producing different metrics under the same candidate ID.
 ## Current research decision
 
 V1 baseline and V2 trend-pullback development reports both recorded `no_policy_selected`. Their
-shared 2022–2024 development dataset is exhausted and closed to all V3 selection/tuning to prevent
-data-snooping. [Protocol V3](recommendation-protocol-v3.md) is
-`candidate_preregistered_input_unfrozen`: it has only a hypothesis and an independent 2019–2021
-target, not a dataset, input lock, implementation, execution, result, or selection authorization.
-It does not alter V1/V2 or create an accuracy claim. The safe project default is `NEUTRAL`; it is
-not investment advice or a trading instruction.
+shared 2022–2024 development dataset is exhausted. [Protocol V3](recommendation-protocol-v3.md)
+is `closed_input_unavailable` because its independent input did not meet predeclared absolute
+continuity; this is not a strategy result and cannot be repaired by changing its range or rules.
+[Protocol V4](recommendation-protocol-v4.md) is `draft_availability_audit_required`, with no
+candidate, parameters, dataset, input lock, selection artifact, or authorization. The safe project
+default is `NEUTRAL`; it is not investment advice or a trading instruction.
 
 No selected candidate or sealed selection artifact exists. Therefore strict OOS 2025 must remain
 sealed: do not copy or run strict OOS freeze/evaluation commands, and do not create a selection

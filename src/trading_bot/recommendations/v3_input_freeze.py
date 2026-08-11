@@ -203,8 +203,6 @@ def _protocol_snapshot() -> tuple[ProtocolV3, _ArtifactSnapshot]:
         protocol = validate_protocol_v3(raw)
     except (UnicodeDecodeError, yaml.YAMLError, _DuplicateYamlKeyError, ProtocolV3Error) as exc:
         raise ProtocolV3InputFreezeError("Protocol V3 configuration is invalid") from exc
-    if protocol.status != PROTOCOL_V3_UNFROZEN_STATUS or protocol.executable:
-        raise ProtocolV3InputFreezeError("Protocol V3 preregistration status is unsafe")
     return protocol, snapshot
 
 
@@ -652,6 +650,8 @@ def freeze_protocol_v3_input(
     """Freeze a verified independent input as an unexecutable committed V3 bundle."""
 
     protocol, config_snapshot = _protocol_snapshot()
+    if protocol.status != PROTOCOL_V3_UNFROZEN_STATUS or protocol.executable:
+        raise ProtocolV3InputFreezeError("Protocol V3 preregistration status is unsafe")
     csv_path = _workspace_relative_path(input_path, "Protocol V3 CSV input", file_required=True)
     metadata_path, anomaly_path = _canonical_sidecars(csv_path)
     bundle = _bundle_path(bundle_output, must_exist=False)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import shutil
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -21,6 +22,7 @@ START = datetime(2019, 1, 1, tzinfo=UTC)
 END = datetime(2022, 1, 1, tzinfo=UTC)
 COUNT = int((END - START).total_seconds() // 3600)
 GENERATION_ID = "a" * 32
+_ORIGINAL_PROTOCOL_SNAPSHOT = v3_input_freeze._protocol_snapshot
 
 
 def _candle(index: int) -> Candle:
@@ -94,6 +96,18 @@ def v3_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, v3_input_source: P
     return Path("data/raw/btcusdt_1h_v3.csv")
 
 
+@pytest.fixture(autouse=True)
+def synthetic_unfrozen_protocol_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise bundle mechanics without making the real closed V3 runnable."""
+
+    config_path = Path(__file__).resolve().parents[2] / "config/recommendation_protocol_v3.yaml"
+    content = config_path.read_bytes()
+    protocol = protocol_v3.load_protocol_v3(config_path)
+    snapshot = v3_input_freeze._ArtifactSnapshot(config_path, content, sha256(content).hexdigest())
+    synthetic = replace(protocol, status=protocol_v3.PROTOCOL_V3_UNFROZEN_STATUS)
+    monkeypatch.setattr(v3_input_freeze, "_protocol_snapshot", lambda: (synthetic, snapshot))
+
+
 def _bundle() -> Path:
     return Path("reports/research/manifests/v3-independent-input")
 
@@ -116,7 +130,45 @@ def _paths(bundle: Path) -> tuple[Path, Path, Path]:
     return marker, generation / "manifest.json", generation / "input-lock.json"
 
 
-def test_freeze_publishes_committed_bundle_without_making_v3_executable(v3_input: Path) -> None:
+def test_closed_v3_rejects_freeze_before_input_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(v3_input_freeze, "_protocol_snapshot", _ORIGINAL_PROTOCOL_SNAPSHOT)
+    monkeypatch.setattr(
+        v3_input_freeze,
+        "read_candles_bytes",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not read input")),
+    )
+    with pytest.raises(v3_input_freeze.ProtocolV3InputFreezeError, match="status is unsafe"):
+        v3_input_freeze.freeze_protocol_v3_input(
+            Path("missing.csv"), tmp_path / "reports/research/manifests/v3-independent-input"
+        )
+
+
+def test_closed_v3_cli_rejects_before_runtime_or_input_access(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(v3_input_freeze, "_protocol_snapshot", _ORIGINAL_PROTOCOL_SNAPSHOT)
+    monkeypatch.setattr(
+        "trading_bot.cli._load_non_operational_dependencies",
+        lambda: (_ for _ in ()).throw(AssertionError("must not load runtime dependencies")),
+    )
+    assert (
+        main(
+            [
+                "freeze-protocol-v3-input",
+                "--input",
+                "missing.csv",
+                "--output",
+                "reports/research/manifests/v3-independent-input",
+            ]
+        )
+        == 1
+    )
+    assert "status is unsafe" in capsys.readouterr().err
+
+
+def test_synthetic_bundle_mechanics_do_not_make_closed_v3_executable(v3_input: Path) -> None:
     bundle = _bundle()
     manifest, lock = v3_input_freeze.freeze_protocol_v3_input(v3_input, bundle)
     marker_path, manifest_path, lock_path = _paths(bundle)
@@ -148,7 +200,7 @@ def test_freeze_publishes_committed_bundle_without_making_v3_executable(v3_input
     protocol = protocol_v3.load_protocol_v3(
         Path(__file__).resolve().parents[2] / "config/recommendation_protocol_v3.yaml"
     )
-    assert protocol.status == protocol_v3.PROTOCOL_V3_UNFROZEN_STATUS
+    assert protocol.status == protocol_v3.PROTOCOL_V3_CLOSED_STATUS
     assert protocol.executable is False
 
 
