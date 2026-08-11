@@ -1,10 +1,9 @@
 # Recommendation research protocol V3
 
-**Status: `candidate_preregistered_input_unfrozen`.** V3 records one candidate hypothesis before
-an independent development input exists. It is not an executable protocol, selection policy,
-performance report, or investment instruction. It does not authorize data download, validation,
-walk-forward execution, selection, strict-OOS work, broker/order/risk activity, ML inference,
-network access, credentials, or live trading.
+**Status: `closed_input_unavailable`.** V3 is closed because its predeclared independent input
+cannot satisfy its absolute-continuity contract. This is neither a strategy success nor failure:
+no candidate execution, performance evaluation, selection, or OOS activity occurred. It is not an
+executable protocol, selection policy, performance report, or investment instruction.
 
 The machine-validated contract is
 [`config/recommendation_protocol_v3.yaml`](../config/recommendation_protocol_v3.yaml). Its
@@ -22,32 +21,32 @@ exactly one technical hypothesis, without weakening a V1/V2 gate:
 > `AVOID` observations whose after-cost directionality and mean return pass every preregistered
 > fold and horizon gate on a previously unused development input.
 
-The sole future candidate is `dual_regime_reclaim_avoid_v3`. There is no parameter sweep,
-threshold search, ML candidate, or replacement variant under V3.
+The sole historical preregistered candidate was `dual_regime_reclaim_avoid_v3`. There is no
+parameter sweep, threshold search, ML candidate, or replacement variant under V3.
 
-## Independent input requirement
+## Closure record
 
-The only V3 development target is
-`[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)`, BTC/USDT 1-hour UTC. It is a target range, not a
-present local dataset, manifest, report, or evidence set. No V3 execution may begin until a new
-dataset for that exact range has passed the existing validation pipeline and produced a
-checksum-verified input-lock artifact.
+V3 predeclared BTC/USDT 1-hour UTC `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` with no
+interruption or gap. Binance Vision verification found `BTCUSDT-1h-2019-03.zip` has 738 rather
+than 744 rows, missing candles from `2019-03-12T02:00:00Z` through
+`2019-03-12T07:00:00Z`. The corresponding daily 1-hour archive has 18/24 rows and daily 1-minute
+archive has 1080/1440 rows; official checksums verified. Therefore V3 must not narrow or change
+its range, whitelist this interruption, or relax continuity after observing availability.
 
 The currently audited maintenance interruption is
 `binance-spot-2023-03-24-trailing-stop-maintenance`. It lies outside the V3 target range, so V3's
-future input lock must record an empty interruption list unless a separately audited interruption
-is actually present in the new target dataset. It must never invent, fill, or treat an
-interruption as tradable.
+historical input-lock design would have recorded an empty interruption list. It must never invent,
+fill, or treat an interruption as tradable.
 
-Strict OOS 2025 remains sealed. It must not be read, downloaded, frozen, evaluated, or reported;
-an unbound V3 candidate cannot authorize it.
+V3 cannot freeze an input, execute, select a policy, or authorize strict OOS. Strict OOS 2025
+remains sealed and must not be read, downloaded, frozen, evaluated, or reported.
 
-## Causal signal contract
+## Historical causal signal contract
 
-All future inputs must be BTC/USDT 1-hour UTC candles closed at decision time. At candle T,
-features and rules may use only OHLCV and derived causal values at or before T in the same
-continuous segment. Unknown gaps and unclosed candles fail closed. A validated interruption is
-non-tradable, resets warm-up, and cannot be crossed by a signal or outcome.
+The closed V3 candidate would have required BTC/USDT 1-hour UTC candles closed at decision time.
+At candle T, features and rules could use only OHLCV and derived causal values at or before T in
+the same continuous segment. Unknown gaps and unclosed candles fail closed. A validated
+interruption is non-tradable, resets warm-up, and cannot be crossed by a signal or outcome.
 
 The fixed candidate may use only existing causal EMA20, EMA50, EMA200, volume-SMA20, and ATR14:
 
@@ -62,7 +61,7 @@ instruction.
 
 ## Locked folds, costs, and comparators
 
-After a valid future input lock, V3 uses exactly these chronological folds:
+The following are historical V3 folds and must never be run:
 
 | Fold | Calibration context | Future validation |
 | --- | --- | --- |
@@ -89,28 +88,18 @@ not public accuracy evidence or an OOS claim.
 There is one candidate and no tie-break. Any failed preregistered gate closes V3; a new idea,
 parameter, cost, fold, or gate requires Protocol V4.
 
-## Future input lock and execution boundary
+## Historical input-lock design only
 
-The tracked config is intentionally unbound. A future input-lock artifact must bind all of the
-following before any V3 execution boundary can be enabled:
+The tracked input-lock design remains historical documentation only. It cannot be used to reopen
+V3. A future protocol must establish its own independently reviewed contract.
 
 - SHA-256 of this exact protocol config and of the frozen dataset manifest;
 - dataset generation ID plus CSV, metadata-sidecar, and anomaly-sidecar SHA-256 values;
 - BTC/USDT, 1-hour UTC range `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)`; and
 - the exact audited interruption IDs in the new dataset.
 
-The validator is pure and read-only: it validates a supplied lock object and never reads a dataset.
-The current `input_unfrozen` status fails before that future activation boundary, so no lock,
-selection artifact, or strict-OOS action is authorized today. A later status transition and lock
-would require separate review; the lock's config SHA-256 prevents editing the candidate contract
-after its data identity is fixed.
-
-The `freeze-protocol-v3-input` command is only a future local input-publication path. Its output
-is one new bundle directory directly under `reports/research/manifests/`; a generation containing
-`manifest.json` and `input-lock.json` is usable only when the bundle's final `commit.json` binds
-their hashes, dataset identity, and this config snapshot. An interrupted publication leaves an
-uncommitted generation that every consumer rejects. A valid committed bundle still does not change
-this status, enable execution, create a selection artifact, or authorize OOS work.
+The validator is pure and read-only. Because V3 is closed, every freeze/execution boundary fails
+before opening a dataset. No lock, selection artifact, or strict-OOS action is authorized.
 
 ## Safety
 

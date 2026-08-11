@@ -79,18 +79,16 @@ all 2025 OOS data sealed.
 | Deterministic regression | `tests/unit/test_trend_pullback_candidate.py` verifies the exact predicate, closed/gap handling, future-candle invariance, baseline dispatch, costs, and safety isolation. |
 | Selection rule | Exactly one v2 candidate; it must pass every predeclared fold and pooled gate. No selection retains `NEUTRAL`; it is never an OOS or public accuracy claim. |
 
-## Development walk-forward protocol V3 candidate preregistration
+## Protocol V3 closure and Protocol V4 availability-audit draft
 
-V3 is `candidate_preregistered_input_unfrozen`: no candidate code, development dataset, input
-lock, walk-forward report, selection artifact, or OOS input has been created. It is not an
-exception to the exhausted 2022--2024 development evidence and cannot reuse that range. The only
-future V3 target is the independently unused
-`[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` BTC/USDT 1-hour UTC range; it remains unavailable
-until a new checksum-verified input-lock artifact exists. The authoritative immutable contract is
-[Protocol V3](recommendation-protocol-v3.md) and `config/recommendation_protocol_v3.yaml`.
+V3 is `closed_input_unavailable`: its predeclared BTC/USDT 1-hour UTC input
+`[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` failed absolute continuity in verified public
+archives. It cannot freeze, execute, select, or authorize OOS, and its range/continuity rule must
+not be changed after the finding. The authoritative closure record is
+[Protocol V3](recommendation-protocol-v3.md).
 
-- Candidate budget: exactly one candidate, `dual_regime_reclaim_avoid_v3`; no parameter variant,
-  threshold sweep, or ML candidate is allowed.
+- Historical candidate record: `dual_regime_reclaim_avoid_v3`; no parameter variant, threshold
+  sweep, or ML candidate was permitted. This record is not an active V3 authorization.
 - Hypothesis: a causal symmetric trend-regime reclaim/rejection signal can separately produce
   after-cost-quality `BUY_BIAS` and avoid-buy `AVOID` observations.
 - Parameters: EMA 20/50/200, volume-SMA 20, volume multiplier 1.2, ATR 14.
@@ -100,7 +98,10 @@ until a new checksum-verified input-lock artifact exists. The authoritative immu
 - Deterministic regression requirement: the future candidate must test closed-candle causality,
   segment reset after the audited interruption, no future-candle dependence, immutable cost
   contract, `AVOID` avoid-buy semantics, and no broker/order/ML dependency.
-- Selection rule: it cannot run before a dataset input lock binds config, manifest, generation,
-  sidecar checksums, range, and interruption IDs. Once separately authorized, every
-  fold/direction/horizon must pass V3's after-cost coverage, sample, directional-accuracy,
-  confidence-bound, and mean-return gate. Any failure closes V3; V4 is required for a new idea.
+- Selection rule: closed; no V3 run or input lock is permitted.
+
+Protocol V4 is `draft_availability_audit_required`. It has no candidate, parameters, dataset
+range, input lock, selection artifact, or OOS authorization. Its only permitted next step is a
+mechanical public Binance Vision availability audit based solely on official checksum, BTC/USDT
+1-hour UTC, closed-candle, and absolute-continuity facts—not signal, return, accuracy, backtest,
+or performance metrics. See [Protocol V4](recommendation-protocol-v4.md).

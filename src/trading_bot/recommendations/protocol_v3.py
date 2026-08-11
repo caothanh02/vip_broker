@@ -19,10 +19,11 @@ import yaml
 
 PROTOCOL_V3_ID = "recommendation_research_v3"
 PROTOCOL_V3_CANDIDATE_ID = "dual_regime_reclaim_avoid_v3"
-PROTOCOL_V3_SCHEMA_VERSION = "1.1"
+PROTOCOL_V3_SCHEMA_VERSION = "1.2"
 PROTOCOL_V3_INPUT_LOCK_SCHEMA_VERSION = "1.0"
 PROTOCOL_V3_UNFROZEN_STATUS = "candidate_preregistered_input_unfrozen"
 PROTOCOL_V3_LOCKED_STATUS = "candidate_preregistered_input_locked"
+PROTOCOL_V3_CLOSED_STATUS = "closed_input_unavailable"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GENERATION_ID_RE = re.compile(r"^[0-9a-f]{32,64}$")
@@ -99,7 +100,7 @@ class ProtocolV3InputLock:
 _EXPECTED_CONFIG: dict[str, object] = {
     "schema_version": PROTOCOL_V3_SCHEMA_VERSION,
     "protocol_id": PROTOCOL_V3_ID,
-    "status": PROTOCOL_V3_UNFROZEN_STATUS,
+    "status": PROTOCOL_V3_CLOSED_STATUS,
     "goal": "after_cost_buy_bias_and_avoid_quality_not_accuracy_maximization",
     "development_target": {
         "symbol": "BTC/USDT",
@@ -215,6 +216,24 @@ _EXPECTED_CONFIG: dict[str, object] = {
         ],
     },
     "failure_rule": "any_failure_closes_v3_and_requires_v4_for_a_new_idea",
+    "closure": {
+        "reason": "independent_input_continuity_unavailable",
+        "strategy_result_evaluated": False,
+        "freeze_authorized": False,
+        "execution_authorized": False,
+        "selection_authorized": False,
+        "strict_oos_authorized": False,
+        "verified_binance_vision_findings": {
+            "monthly_archive": "BTCUSDT-1h-2019-03.zip",
+            "expected_rows": 744,
+            "observed_rows": 738,
+            "missing_open_start": "2019-03-12T02:00:00Z",
+            "missing_open_end": "2019-03-12T07:00:00Z",
+            "daily_1h_rows": "18/24",
+            "daily_1m_rows": "1080/1440",
+            "official_checksums_verified": True,
+        },
+    },
     "safety_locks": {
         "live_trading_enabled": False,
         "broker_used": False,
@@ -314,7 +333,7 @@ def validate_protocol_v3(raw: object) -> ProtocolV3:
 
     return ProtocolV3(
         protocol_id=PROTOCOL_V3_ID,
-        status=PROTOCOL_V3_UNFROZEN_STATUS,
+        status=PROTOCOL_V3_CLOSED_STATUS,
         development_start=_parse_utc(development["start"], "development target start"),
         development_end=_parse_utc(development["end"], "development target end"),
         strict_oos_start=_parse_utc(strict_oos["start"], "strict OOS start"),
@@ -459,6 +478,8 @@ def require_protocol_v3_execution(
 ) -> ProtocolV3InputLock:
     """Fail closed until a separately reviewed input-locked V3 transition exists."""
 
+    if protocol.status == PROTOCOL_V3_CLOSED_STATUS:
+        raise ProtocolV3Error("protocol v3 is closed and cannot be executed")
     if not protocol.executable:
         raise ProtocolV3Error("protocol v3 is input-unfrozen and cannot be executed")
     return validate_protocol_v3_input_lock(raw_input_lock, protocol, expected_config_sha256)

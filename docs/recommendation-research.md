@@ -17,16 +17,19 @@ research and product-safe default is `NEUTRAL`; it is not investment advice or a
 instruction. New candidate research requires a separate governance decision and a new,
 independent development range that has not already been used for candidate selection.
 
-## Protocol V3 preregistration
+## Protocol V3 closure and Protocol V4 draft
 
-Protocol V3 is a candidate hypothesis preregistration only. Its status is
-`candidate_preregistered_input_unfrozen`: it does not change V1/V2 results, authorize execution,
-or make the exhausted 2022--2024 range available again. V3 names an independent future development
-target `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)`, but no dataset, input lock, report, or
-selection artifact exists for it. Its sole candidate, parameters, cost contract, folds, gates,
-failure rule, and OOS seal are locked in
-[the Protocol V3 document](recommendation-protocol-v3.md) and validated config. Only a new,
-checksum-verified input-lock artifact can make V3 eligible for a separately reviewed execution.
+Protocol V3 is `closed_input_unavailable`. Its independent target
+`[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` failed the predeclared continuity requirement;
+this is an availability finding, not a strategy result. V3 cannot freeze, execute, select, or
+authorize OOS, and must not change its range or continuity policy after observing the archive.
+See [the Protocol V3 closure record](recommendation-protocol-v3.md).
+
+Protocol V4 is `draft_availability_audit_required`. It has no candidate, parameters, dataset
+range, input lock, selection artifact, or OOS authorization. Its only permitted next step is a
+mechanical public-archive availability audit that uses checksum/UTC/closed-candle/continuity facts
+only—never signals, returns, accuracy, backtests, or performance metrics. See
+[the Protocol V4 draft](recommendation-protocol-v4.md).
 
 ## Development walk-forward protocol v1
 
