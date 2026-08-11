@@ -93,11 +93,11 @@ not be changed after the finding. The authoritative closure record is
   after-cost-quality `BUY_BIAS` and avoid-buy `AVOID` observations.
 - Parameters: EMA 20/50/200, volume-SMA 20, volume multiplier 1.2, ATR 14.
 - Cost contract: entry/exit fee `0.001`; entry/exit slippage `0.0005`, all exact `Decimal` values.
-- Intended folds: the three locked folds over the future independent target; 2025 is excluded and
-  sealed.
-- Deterministic regression requirement: the future candidate must test closed-candle causality,
-  segment reset after the audited interruption, no future-candle dependence, immutable cost
-  contract, `AVOID` avoid-buy semantics, and no broker/order/ML dependency.
+- Intended folds: three historical V3 folds over its unavailable independent target; they must
+  never run and 2025 remains excluded and sealed.
+- Historical regression record: the unexecuted V3 candidate was specified to test
+  closed-candle causality, no future-candle dependence, immutable costs, `AVOID` avoid-buy
+  semantics, and no broker/order/ML dependency. It is not a requirement or authorization for V4.
 - Selection rule: closed; no V3 run or input lock is permitted.
 
 Protocol V4 is `draft_availability_audit_required`. It has no candidate, parameters, dataset
