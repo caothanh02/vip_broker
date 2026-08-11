@@ -25,6 +25,11 @@ closed 1-hour timestamps, and exact continuity, then prints a JSON result. It ne
 cache, report, dataset, manifest, or selection artifact; it does not use REST, compute a feature,
 signal, return, accuracy, backtest, or performance metric.
 
+For raw timestamp identity it applies the repository's fixed, checksum-bound Binance Vision policy:
+an early raw close of at most 60 seconds is canonicalized to its closed UTC hour and reported as an
+accepted timestamp anomaly. No known market interruption is passed to this audit, so every actual
+missing candle or larger/late timestamp deviation fails the absolute-continuity requirement.
+
 The command accepts only complete UTC calendar months ending no later than the sealed 2025 OOS
 boundary. A continuous result means `availability_verified_not_selected`: it may inform a later
 governance review, but does not choose a range, candidate, parameter, policy, or OOS action. Any

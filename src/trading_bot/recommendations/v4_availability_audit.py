@@ -19,13 +19,16 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from trading_bot.data.binance_vision import (
+    ArchiveTimestampPolicyError,
+    ArchiveTimestampQuality,
+    parse_verified_archive_kline,
+)
 from trading_bot.recommendations.protocol_v4 import ProtocolV4, load_protocol_v4
 
 _BINANCE_VISION = "https://data.binance.vision/data/spot"
 _SYMBOL = "BTCUSDT"
 _TIMEFRAME = "1h"
-_HOUR_MS = 3_600_000
-_CLOSE_OFFSET_MS = _HOUR_MS - 1
 _MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -40,6 +43,7 @@ class ArchiveAvailability:
     sha256: str | None
     expected_candle_count: int
     observed_candle_count: int | None
+    accepted_timestamp_anomaly_count: int | None
     missing_open_times: tuple[str, ...]
     duplicate_open_times: tuple[str, ...]
     unexpected_open_times: tuple[str, ...]
@@ -107,7 +111,9 @@ def _checksum(text: str, archive_name: str) -> str:
     return value
 
 
-def _archive_opens(data: bytes, archive_name: str) -> tuple[tuple[datetime, ...], bool]:
+def _archive_opens(
+    data: bytes, archive_name: str, checksum: str
+) -> tuple[tuple[datetime, ...], int]:
     if len(data) > _MAX_ARCHIVE_BYTES:
         raise ProtocolV4AvailabilityAuditError("archive is too large")
     expected_member = archive_name.removesuffix(".zip") + ".csv"
@@ -126,18 +132,25 @@ def _archive_opens(data: bytes, archive_name: str) -> tuple[tuple[datetime, ...]
         rows = rows[1:]
 
     opens: list[datetime] = []
-    closed_only = True
+    accepted_anomalies = 0
     for index, row in enumerate(rows):
         try:
-            open_ms = int(row[0])
-            close_ms = int(row[6])
-        except (IndexError, ValueError) as exc:
-            raise ProtocolV4AvailabilityAuditError(f"archive row {index} is invalid") from exc
-        if open_ms % _HOUR_MS or close_ms != open_ms + _CLOSE_OFFSET_MS:
-            closed_only = False
-            continue
-        opens.append(datetime.fromtimestamp(open_ms // 1000, tz=UTC))
-    return tuple(opens), closed_only
+            parsed = parse_verified_archive_kline(
+                row,
+                archive_name=archive_name,
+                archive_sha256=checksum,
+                row_number=index,
+                checksum_verified=True,
+                interruptions=(),
+            )
+        except ArchiveTimestampPolicyError as exc:
+            raise ProtocolV4AvailabilityAuditError(
+                f"archive row {index} violates timestamp policy: {exc}"
+            ) from exc
+        opens.append(parsed.candle.open_time)
+        if parsed.quality is not ArchiveTimestampQuality.EXACT:
+            accepted_anomalies += 1
+    return tuple(opens), accepted_anomalies
 
 
 def _archive_result(
@@ -146,7 +159,7 @@ def _archive_result(
     actual_checksum = hashlib.sha256(data).hexdigest()
     if actual_checksum != checksum:
         raise ProtocolV4AvailabilityAuditError("archive checksum mismatch")
-    opens, closed_only = _archive_opens(data, archive_name)
+    opens, accepted_anomalies = _archive_opens(data, archive_name, checksum)
     expected = _expected_opens(start, end)
     counts = Counter(opens)
     actual = set(opens)
@@ -159,22 +172,28 @@ def _archive_result(
         sha256=checksum,
         expected_candle_count=len(expected),
         observed_candle_count=len(opens),
+        accepted_timestamp_anomaly_count=accepted_anomalies,
         missing_open_times=missing,
         duplicate_open_times=duplicate,
         unexpected_open_times=unexpected,
-        closed_candles_only=closed_only,
+        closed_candles_only=True,
         error=None,
     )
 
 
 def _error_result(
-    archive_name: str, start: datetime, end: datetime, error: ValueError
+    archive_name: str,
+    start: datetime,
+    end: datetime,
+    error: ValueError,
+    checksum: str | None,
 ) -> ArchiveAvailability:
     return ArchiveAvailability(
         archive_name=archive_name,
-        sha256=None,
+        sha256=checksum,
         expected_candle_count=len(_expected_opens(start, end)),
         observed_candle_count=None,
+        accepted_timestamp_anomaly_count=None,
         missing_open_times=(),
         duplicate_open_times=(),
         unexpected_open_times=(),
@@ -199,13 +218,14 @@ async def _audit_month(
     stamp = start.strftime("%Y-%m")
     archive_name = f"{_SYMBOL}-{_TIMEFRAME}-{stamp}.zip"
     relative = f"monthly/klines/{_SYMBOL}/{_TIMEFRAME}/{archive_name}"
+    checksum: str | None = None
     try:
         checksum_response = await _fetch(client, f"{base_url}/{relative}.CHECKSUM")
         checksum = _checksum(checksum_response.text, archive_name)
         archive_response = await _fetch(client, f"{base_url}/{relative}")
         return _archive_result(archive_name, archive_response.content, checksum, start, end)
     except ProtocolV4AvailabilityAuditError as exc:
-        return _error_result(archive_name, start, end, exc)
+        return _error_result(archive_name, start, end, exc, checksum)
 
 
 def _archive_json(value: ArchiveAvailability) -> dict[str, object]:
@@ -215,6 +235,7 @@ def _archive_json(value: ArchiveAvailability) -> dict[str, object]:
         "archive_sha256": value.sha256,
         "expected_candle_count": value.expected_candle_count,
         "observed_candle_count": value.observed_candle_count,
+        "accepted_timestamp_anomaly_count": value.accepted_timestamp_anomaly_count,
         "missing_open_times": list(value.missing_open_times),
         "duplicate_open_times": list(value.duplicate_open_times),
         "unexpected_open_times": list(value.unexpected_open_times),

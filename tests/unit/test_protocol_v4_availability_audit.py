@@ -16,7 +16,13 @@ from trading_bot.cli import build_parser, main
 from trading_bot.recommendations import v4_availability_audit
 
 
-def _month_rows(start: datetime, *, missing: set[datetime] | None = None) -> str:
+def _month_rows(
+    start: datetime,
+    *,
+    missing: set[datetime] | None = None,
+    early_close: set[datetime] | None = None,
+    invalid_early_close: set[datetime] | None = None,
+) -> str:
     values: list[str] = []
     cursor = start
     stop = (
@@ -27,7 +33,12 @@ def _month_rows(start: datetime, *, missing: set[datetime] | None = None) -> str
     while cursor < stop:
         if missing is None or cursor not in missing:
             open_ms = int(cursor.timestamp()) * 1000
-            values.append(f"{open_ms},1,1,1,1,1,{open_ms + 3_599_999},1,1,1,1,0\n")
+            close_ms = open_ms + 3_599_999
+            if early_close is not None and cursor in early_close:
+                close_ms -= 1_000
+            if invalid_early_close is not None and cursor in invalid_early_close:
+                close_ms -= 61_000
+            values.append(f"{open_ms},1,1,1,1,1,{close_ms},1,1,1,1,0\n")
         cursor += timedelta(hours=1)
     return "".join(values)
 
@@ -86,6 +97,50 @@ async def test_v4_audit_verifies_continuous_month_without_selecting_anything() -
     assert isinstance(archive, dict)
     assert archive["expected_candle_count"] == 744
     assert archive["observed_candle_count"] == 744
+    assert archive["accepted_timestamp_anomaly_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_v4_audit_accepts_the_existing_verified_early_close_policy() -> None:
+    start = datetime(2021, 1, 1, tzinfo=UTC)
+    archive_name = "BTCUSDT-1h-2021-01.zip"
+    payload = _zip(
+        archive_name,
+        _month_rows(start, early_close={datetime(2021, 1, 2, 3, tzinfo=UTC)}),
+    )
+
+    report = await v4_availability_audit.audit_protocol_v4_availability(
+        start,
+        datetime(2021, 2, 1, tzinfo=UTC),
+        transport=_transport(payload, archive_name),
+    )
+
+    assert report["result"] == "availability_verified_not_selected"
+    archive = report["archives"][0]
+    assert isinstance(archive, dict)
+    assert archive["accepted_timestamp_anomaly_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_v4_audit_keeps_checksum_evidence_when_timestamp_policy_fails() -> None:
+    start = datetime(2021, 1, 1, tzinfo=UTC)
+    archive_name = "BTCUSDT-1h-2021-01.zip"
+    payload = _zip(
+        archive_name,
+        _month_rows(start, invalid_early_close={datetime(2021, 1, 2, 3, tzinfo=UTC)}),
+    )
+
+    report = await v4_availability_audit.audit_protocol_v4_availability(
+        start,
+        datetime(2021, 2, 1, tzinfo=UTC),
+        transport=_transport(payload, archive_name),
+    )
+
+    assert report["official_checksums_verified"] is True
+    archive = report["archives"][0]
+    assert isinstance(archive, dict)
+    assert archive["checksum_verified"] is True
+    assert "timestamp policy" in str(archive["error"])
 
 
 @pytest.mark.asyncio
@@ -137,7 +192,8 @@ def test_v4_audit_has_no_persistence_or_trading_dependencies() -> None:
         "OrderRequest",
         "ProbabilityModel",
         "trading_bot.settings",
-        "trading_bot.data",
+        "BinanceHistoricalDataClient",
+        "BinancePublicClient",
         "write_json",
         "write_text",
         "write_bytes",
