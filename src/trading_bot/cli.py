@@ -382,6 +382,17 @@ def build_parser() -> argparse.ArgumentParser:
     freeze_research.add_argument("--input", type=Path, required=True)
     freeze_research.add_argument("--output", type=Path, required=True)
     freeze_research.add_argument("--overwrite", action="store_true")
+    freeze_v3_input = subcommands.add_parser(
+        "freeze-protocol-v3-input",
+        help="freeze a future independent V3 input without authorizing execution",
+    )
+    freeze_v3_input.add_argument("--input", type=Path, required=True)
+    freeze_v3_input.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="new bundle directory directly under reports/research/manifests",
+    )
     experiment = subcommands.add_parser("run-recommendation-experiment")
     experiment.add_argument("--manifest", type=Path, required=True)
     experiment.add_argument("--candidate", required=True)
@@ -839,6 +850,30 @@ def _freeze_recommendation_research(args: argparse.Namespace) -> None:
     )
 
 
+def _freeze_protocol_v3_input(args: argparse.Namespace) -> None:
+    """Run the isolated V3 input freeze without loading settings or runtime code."""
+
+    from trading_bot.recommendations.v3_input_freeze import freeze_protocol_v3_input
+
+    manifest, input_lock = freeze_protocol_v3_input(args.input, args.output)
+    dataset = manifest["dataset"]
+    assert isinstance(dataset, dict)
+    print(
+        json.dumps(
+            {
+                "bundle_output": str(args.output),
+                "protocol_id": manifest["protocol_id"],
+                "input_status": manifest["input_status"],
+                "candle_count": dataset["candle_count"],
+                "frozen_manifest_sha256": input_lock["frozen_manifest_sha256"],
+                "v3_executable": False,
+                "safety_locks": manifest["safety_locks"],
+            },
+            indent=2,
+        )
+    )
+
+
 def _run_recommendation_experiment(args: argparse.Namespace, settings: BotSettings) -> None:
     result = run_development_experiment(
         args.manifest,
@@ -953,13 +988,15 @@ def _run_strict_oos_recommendation_evaluation(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command in {"operational-status", "audit-safety"}:
+    if args.command in {"operational-status", "audit-safety", "freeze-protocol-v3-input"}:
         try:
             if args.command == "operational-status":
                 _operational_status(args)
-            else:
+            elif args.command == "audit-safety":
                 _audit_safety(args)
-        except OperationalSafetyError as exc:
+            else:
+                _freeze_protocol_v3_input(args)
+        except (OperationalSafetyError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         return 0

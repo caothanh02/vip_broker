@@ -26,7 +26,13 @@ addopts = "-q --basetemp=.pytest-tmp"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = [".pytest-tmp", ".pytest-review-tmp", ".pytest-protocol-v3*"]
+extend-exclude = [
+    ".pytest-tmp",
+    ".pytest-review-tmp",
+    ".pytest-protocol-v3*",
+    ".pytest-v3-input-freeze*",
+    ".pytest-v3-input-transaction*",
+]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]

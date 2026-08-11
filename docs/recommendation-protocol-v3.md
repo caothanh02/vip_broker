@@ -105,6 +105,13 @@ selection artifact, or strict-OOS action is authorized today. A later status tra
 would require separate review; the lock's config SHA-256 prevents editing the candidate contract
 after its data identity is fixed.
 
+The `freeze-protocol-v3-input` command is only a future local input-publication path. Its output
+is one new bundle directory directly under `reports/research/manifests/`; a generation containing
+`manifest.json` and `input-lock.json` is usable only when the bundle's final `commit.json` binds
+their hashes, dataset identity, and this config snapshot. An interrupted publication leaves an
+uncommitted generation that every consumer rejects. A valid committed bundle still does not change
+this status, enable execution, create a selection artifact, or authorize OOS work.
+
 ## Safety
 
 Default output remains `NEUTRAL`. This repository remains research-only: it does not provide
