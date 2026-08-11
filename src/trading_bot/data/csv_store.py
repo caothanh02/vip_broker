@@ -9,6 +9,7 @@ import time
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,27 @@ def read_candles(
     return merge_candles(candles, allowed_missing_open_times=allowed_missing_open_times)
 
 
+def read_candles_bytes(
+    content: bytes, allowed_missing_open_times: set[datetime] | None = None
+) -> list[Candle]:
+    """Parse a stable CSV byte snapshot without reopening its filesystem path."""
+
+    try:
+        decoded = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CsvDataError("CSV is not valid UTF-8") from exc
+    reader = csv.DictReader(StringIO(decoded, newline=""))
+    if reader.fieldnames != CSV_FIELDS:
+        raise CsvDataError("CSV schema does not match expected candle columns")
+    try:
+        candles = [_parse_row(row) for row in reader]
+    except csv.Error as exc:
+        raise CsvDataError("malformed candle CSV") from exc
+    if not candles:
+        raise CsvDataError("CSV contains no candles")
+    return merge_candles(candles, allowed_missing_open_times=allowed_missing_open_times)
+
+
 def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -176,8 +198,6 @@ def write_candles_atomic(
         }
         for candle in normalized
     ]
-    from io import StringIO
-
     stream = StringIO()
     writer = csv.DictWriter(stream, fieldnames=CSV_FIELDS, lineterminator="\n")
     writer.writeheader()

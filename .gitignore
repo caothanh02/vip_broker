@@ -7,6 +7,9 @@ __pycache__/
 .pytest-*-tmp/
 .pytest-protocol-v3*/
 .pytest-v3-review*/
+.pytest-v3-input-freeze*/
+.pytest-v3-input-review*/
+.pytest-v3-input-transaction*/
 .mypy_cache/
 .ruff_cache/
 data/raw/*
