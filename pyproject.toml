@@ -20,6 +20,9 @@ trading-bot = "trading_bot.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/trading_bot"]
+
+[tool.hatch.build]
+exclude = [".local/**"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --basetemp=.pytest-tmp"
