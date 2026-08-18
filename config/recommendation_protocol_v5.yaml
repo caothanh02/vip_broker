@@ -1,6 +1,6 @@
-schema_version: "1.1"
+schema_version: "1.2"
 protocol_id: "recommendation_research_v5"
-status: "source_selected_availability_audit_required"
+status: "closed_input_unavailable"
 source_selection:
   selection_basis: "license_provenance_and_mechanical_availability_only"
   required_facts:
@@ -35,7 +35,18 @@ availability_audit:
     end: "2022-01-01T00:00:00Z"
   request_page_candles: 1000
   minimum_request_interval_seconds: 1
-  outcome: "pending"
+  outcome: "closed_source_history_window"
+  observed_response:
+    checked_at: "2026-08-18T04:02:47Z"
+    http_status: 400
+    provider_error: "Candlestick too long ago. Maximum 10000 points ago are allowed"
+closure:
+  reason: "public_source_history_window_does_not_cover_preregistered_range"
+  strategy_result_evaluated: false
+  source_selection_authorized: false
+  input_freeze_authorized: false
+  execution_authorized: false
+  strict_oos_authorized: false
 candidate: null
 parameters: null
 development_dataset_range: null

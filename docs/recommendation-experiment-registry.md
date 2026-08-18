@@ -79,7 +79,7 @@ all 2025 OOS data sealed.
 | Deterministic regression | `tests/unit/test_trend_pullback_candidate.py` verifies the exact predicate, closed/gap handling, future-candle invariance, baseline dispatch, costs, and safety isolation. |
 | Selection rule | Exactly one v2 candidate; it must pass every predeclared fold and pooled gate. No selection retains `NEUTRAL`; it is never an OOS or public accuracy claim. |
 
-## Protocol V3/V4 closure and Protocol V5 source-governance draft
+## Protocol V3/V4/V5 input-availability closure
 
 V3 is `closed_input_unavailable`: its predeclared BTC/USDT 1-hour UTC input
 `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` failed absolute continuity in verified public
@@ -105,7 +105,8 @@ archives from 2017-09 through 2022-01: checksums verified, but 24 archives faile
 timestamp policy and the longest continuous block was four months. It cannot audit, freeze,
 execute, select, or authorize OOS. See [Protocol V4](recommendation-protocol-v4.md).
 
-Protocol V5 is `draft_source_selection_required`. It has no source, candidate, parameters, range,
-input lock, selection artifact, or OOS authorization. A future governance review may use only
-license, provenance, and mechanical availability facts—not signal, return, accuracy, backtest, PnL
-or performance metrics. See [Protocol V5](recommendation-protocol-v5.md).
+Protocol V5 is `closed_input_unavailable`. Its selected Gate public endpoint rejected the fixed
+2019–2022 request with HTTP 400 because only the most recent 10,000 candlesticks are available.
+No data was published and V5 cannot retry, alter its range, use a fallback source, freeze, execute,
+select or authorize OOS. This is an input-availability finding, not a strategy result. See
+[Protocol V5](recommendation-protocol-v5.md).

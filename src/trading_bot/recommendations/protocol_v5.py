@@ -1,7 +1,7 @@
-"""Fail-closed source governance for Protocol V5.
+"""Immutable closure record for Protocol V5.
 
-V5 selects a public data source only for a mechanical availability audit. It
-does not authorize a candidate, research execution, selection, or OOS access.
+Gate's public endpoint could not cover V5's preregistered history. V5 is now
+closed and cannot make another network, source, candidate or OOS action.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from pathlib import Path
 import yaml
 
 PROTOCOL_V5_ID = "recommendation_research_v5"
-PROTOCOL_V5_SCHEMA_VERSION = "1.1"
-PROTOCOL_V5_SOURCE_AUDIT_STATUS = "source_selected_availability_audit_required"
+PROTOCOL_V5_SCHEMA_VERSION = "1.2"
+PROTOCOL_V5_CLOSED_STATUS = "closed_input_unavailable"
 
 
 class ProtocolV5Error(ValueError):
@@ -37,7 +37,7 @@ class ProtocolV5:
 _EXPECTED_CONFIG: dict[str, object] = {
     "schema_version": PROTOCOL_V5_SCHEMA_VERSION,
     "protocol_id": PROTOCOL_V5_ID,
-    "status": PROTOCOL_V5_SOURCE_AUDIT_STATUS,
+    "status": PROTOCOL_V5_CLOSED_STATUS,
     "source_selection": {
         "selection_basis": "license_provenance_and_mechanical_availability_only",
         "required_facts": [
@@ -78,7 +78,20 @@ _EXPECTED_CONFIG: dict[str, object] = {
         },
         "request_page_candles": 1000,
         "minimum_request_interval_seconds": 1,
-        "outcome": "pending",
+        "outcome": "closed_source_history_window",
+        "observed_response": {
+            "checked_at": "2026-08-18T04:02:47Z",
+            "http_status": 400,
+            "provider_error": "Candlestick too long ago. Maximum 10000 points ago are allowed",
+        },
+    },
+    "closure": {
+        "reason": "public_source_history_window_does_not_cover_preregistered_range",
+        "strategy_result_evaluated": False,
+        "source_selection_authorized": False,
+        "input_freeze_authorized": False,
+        "execution_authorized": False,
+        "strict_oos_authorized": False,
     },
     "candidate": None,
     "parameters": None,
@@ -115,9 +128,9 @@ def _parse_utc(value: object, label: str) -> datetime:
 
 
 def validate_protocol_v5(raw: object) -> ProtocolV5:
-    """Validate the exact source-audit contract without reading market input."""
+    """Validate the exact V5 closure record without reading market input."""
     if not isinstance(raw, dict) or raw != _EXPECTED_CONFIG:
-        raise ProtocolV5Error("protocol v5 differs from its immutable source-audit governance")
+        raise ProtocolV5Error("protocol v5 differs from its immutable closure record")
     strict_oos = raw["strict_oos"]
     availability_audit = raw["availability_audit"]
     assert isinstance(strict_oos, dict)
@@ -131,7 +144,7 @@ def validate_protocol_v5(raw: object) -> ProtocolV5:
         raise ProtocolV5Error("availability audit range is invalid")
     return ProtocolV5(
         PROTOCOL_V5_ID,
-        PROTOCOL_V5_SOURCE_AUDIT_STATUS,
+        PROTOCOL_V5_CLOSED_STATUS,
         strict_oos_start,
         availability_start,
         availability_end,
@@ -142,18 +155,18 @@ def load_protocol_v5(path: Path = Path("config/recommendation_protocol_v5.yaml")
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
-        raise ProtocolV5Error("could not read protocol v5 source-audit governance") from exc
+        raise ProtocolV5Error("could not read protocol v5 closure record") from exc
     return validate_protocol_v5(raw)
 
 
 def require_protocol_v5_availability_audit(protocol: ProtocolV5) -> None:
-    if protocol.status != PROTOCOL_V5_SOURCE_AUDIT_STATUS:
-        raise ProtocolV5Error("protocol v5 does not authorize a source availability audit")
+    del protocol
+    raise ProtocolV5Error("protocol v5 is closed and cannot audit an input source")
 
 
 def _blocked(protocol: ProtocolV5, action: str) -> None:
     del protocol
-    raise ProtocolV5Error(f"protocol v5 has no candidate and cannot {action}")
+    raise ProtocolV5Error(f"protocol v5 is closed and cannot {action}")
 
 
 def require_protocol_v5_source_ingest(protocol: ProtocolV5) -> None:

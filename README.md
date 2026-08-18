@@ -34,12 +34,11 @@ The V1 baseline and V2 trend-pullback development protocols both reached `no_pol
 The 2022–2024 development dataset is exhausted and closed to all V3 candidate selection or tuning.
 Protocol V3 and V4 are `closed_input_unavailable`: their independent inputs could not meet the
 predeclared absolute-continuity requirement. These are not strategy results; neither protocol can
-freeze, execute, select, or authorize OOS. Protocol V5 is
-`source_selected_availability_audit_required`: Gate.io public Spot BTC/USDT 1-hour data is
-selected only for a mechanical 2019–2022 availability audit, paced at one public request per
-second and validated before publication. It has no candidate, development input lock or OOS
-authorization. OOS 2025 remains sealed and has not been opened. The project default is `NEUTRAL`,
-with no OOS accuracy claim, live trading, broker use, or order submission. See the
+freeze, execute, select, or authorize OOS. Protocol V5 is `closed_input_unavailable`: Gate.io's
+public endpoint rejected the preregistered 2019–2022 request because its history window is too
+short. No data was published and V5 cannot retry, change range or use a fallback source. OOS 2025
+remains sealed and has not been opened. The project default is `NEUTRAL`, with no OOS accuracy
+claim, live trading, broker use, or order submission. See the
 [research protocol](docs/recommendation-research.md),
 [Protocol V3](docs/recommendation-protocol-v3.md), and
 [Protocol V4](docs/recommendation-protocol-v4.md), and
