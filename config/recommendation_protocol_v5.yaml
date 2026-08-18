@@ -1,0 +1,36 @@
+schema_version: "1.0"
+protocol_id: "recommendation_research_v5"
+status: "draft_source_selection_required"
+source_selection:
+  selection_basis: "license_provenance_and_mechanical_availability_only"
+  required_facts:
+    - "license_or_terms_verified"
+    - "source_provenance_verified"
+    - "btc_usdt_spot_1h_utc"
+    - "closed_candles_only"
+    - "absolute_continuity"
+  prohibited_selection_inputs:
+    - "signal"
+    - "return"
+    - "accuracy"
+    - "backtest"
+    - "pnl"
+    - "performance_metric"
+data_source: null
+candidate: null
+parameters: null
+development_dataset_range: null
+required_input_lock: null
+selection_artifact: null
+strict_oos:
+  start: "2025-01-01T00:00:00Z"
+  status: "sealed"
+  evaluation_authorized: false
+safety_locks:
+  live_trading_enabled: false
+  broker_used: false
+  orders_submitted: false
+  risk_engine_used: false
+  dry_run_broker_used: false
+  ml_used: false
+  network_used: false

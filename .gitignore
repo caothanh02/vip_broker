@@ -12,6 +12,7 @@ __pycache__/
 .pytest-v3-input-transaction*/
 .pytest-v4-governance*/
 .pytest-v4-audit*/
+.pytest-v5-governance*/
 .mypy_cache/
 .ruff_cache/
 data/raw/*

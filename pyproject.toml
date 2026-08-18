@@ -34,6 +34,7 @@ extend-exclude = [
     ".pytest-v3-input-transaction*",
     ".pytest-v4-governance*",
     ".pytest-v4-audit*",
+    ".pytest-v5-governance*",
 ]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

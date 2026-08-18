@@ -110,9 +110,11 @@ V1 baseline and V2 trend-pullback development reports both recorded `no_policy_s
 shared 2022–2024 development dataset is exhausted. [Protocol V3](recommendation-protocol-v3.md)
 is `closed_input_unavailable` because its independent input did not meet predeclared absolute
 continuity; this is not a strategy result and cannot be repaired by changing its range or rules.
-[Protocol V4](recommendation-protocol-v4.md) is `draft_availability_audit_required`, with no
-candidate, parameters, dataset, input lock, selection artifact, or authorization. The safe project
-default is `NEUTRAL`; it is not investment advice or a trading instruction.
+[Protocol V4](recommendation-protocol-v4.md) is also `closed_input_unavailable` after its
+availability audit found no adequate continuous range. [Protocol V5](recommendation-protocol-v5.md)
+is `draft_source_selection_required`, with no source, candidate, parameters, dataset, input lock,
+selection artifact, or authorization. The safe project default is `NEUTRAL`; it is not investment
+advice or a trading instruction.
 
 No selected candidate or sealed selection artifact exists. Therefore strict OOS 2025 must remain
 sealed: do not copy or run strict OOS freeze/evaluation commands, and do not create a selection

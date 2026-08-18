@@ -17,7 +17,7 @@ research and product-safe default is `NEUTRAL`; it is not investment advice or a
 instruction. New candidate research requires a separate governance decision and a new,
 independent development range that has not already been used for candidate selection.
 
-## Protocol V3 closure and Protocol V4 draft
+## Protocol V3/V4 closure and Protocol V5 draft
 
 Protocol V3 is `closed_input_unavailable`. Its independent target
 `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` failed the predeclared continuity requirement;
@@ -25,11 +25,16 @@ this is an availability finding, not a strategy result. V3 cannot freeze, execut
 authorize OOS, and must not change its range or continuity policy after observing the archive.
 See [the Protocol V3 closure record](recommendation-protocol-v3.md).
 
-Protocol V4 is `draft_availability_audit_required`. It has no candidate, parameters, dataset
-range, input lock, selection artifact, or OOS authorization. Its only permitted next step is a
-mechanical public-archive availability audit that uses checksum/UTC/closed-candle/continuity facts
-only—never signals, returns, accuracy, backtests, or performance metrics. See
-[the Protocol V4 draft](recommendation-protocol-v4.md).
+Protocol V4 is `closed_input_unavailable`: its 52-month public archive audit verified official
+checksums but found 24 failed archives; the longest continuous block was only four months. This is
+an input-availability finding, not a strategy result. V4 cannot audit, freeze, execute, select, or
+authorize OOS. See [the Protocol V4 closure record](recommendation-protocol-v4.md).
+
+Protocol V5 is `draft_source_selection_required`. It has no source, candidate, parameters,
+dataset range, input lock, selection artifact, or OOS authorization. Its only future governance
+decision may consider license, provenance and mechanical availability facts—never signals,
+returns, accuracy, backtests, PnL or performance metrics. See
+[the Protocol V5 draft](recommendation-protocol-v5.md).
 
 ## Development walk-forward protocol v1
 
