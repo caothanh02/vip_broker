@@ -43,6 +43,7 @@ claim, live trading, broker use, or order submission. See the
 [Protocol V3](docs/recommendation-protocol-v3.md), and
 [Protocol V4](docs/recommendation-protocol-v4.md), and
 [Protocol V5](docs/recommendation-protocol-v5.md), and
+[Protocol V6](docs/recommendation-protocol-v6.md), and
 [experiment registry](docs/recommendation-experiment-registry.md).
 
 Strict OOS is a dormant safety boundary, not a currently authorized workflow. It would require a
