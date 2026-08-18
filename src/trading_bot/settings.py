@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +21,7 @@ class BotSettings(BaseSettings):
     live_trading_confirmation: str = ""
     binance_api_key: str = ""
     binance_api_secret: str = ""
+    coinapi_api_key: SecretStr = SecretStr("")
     binance_public_base_url: str = "https://api.binance.com/api/v3"
     http_timeout_seconds: float = 20.0
     http_max_retries: int = 3

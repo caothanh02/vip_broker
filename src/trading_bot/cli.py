@@ -408,6 +408,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data/raw/btcusdt_1h_v5_gate_2019_2022.csv"),
     )
+    subcommands.add_parser(
+        "verify-protocol-v6-coinapi-access",
+        help="make one authenticated V6 CoinAPI symbol-identity request; no OHLCV is read",
+    )
     experiment = subcommands.add_parser("run-recommendation-experiment")
     experiment.add_argument("--manifest", type=Path, required=True)
     experiment.add_argument("--candidate", required=True)
@@ -944,6 +948,18 @@ def _audit_protocol_v4_availability(args: argparse.Namespace) -> None:
     print(json.dumps(payload, indent=2))
 
 
+def _verify_protocol_v6_coinapi_access() -> None:
+    """Perform the isolated V6 credential and symbol-identity check."""
+
+    from trading_bot.recommendations.v6_access_verification import (
+        load_local_coinapi_key,
+        verify_protocol_v6_coinapi_access,
+    )
+
+    payload = asyncio.run(verify_protocol_v6_coinapi_access(load_local_coinapi_key()))
+    print(json.dumps(payload, indent=2))
+
+
 def _run_recommendation_experiment(args: argparse.Namespace, settings: BotSettings) -> None:
     result = run_development_experiment(
         args.manifest,
@@ -1064,6 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
         "freeze-protocol-v3-input",
         "audit-protocol-v4-availability",
         "download-protocol-v5-gate-availability",
+        "verify-protocol-v6-coinapi-access",
     }:
         try:
             if args.command == "operational-status":
@@ -1074,6 +1091,8 @@ def main(argv: list[str] | None = None) -> int:
                 _freeze_protocol_v3_input(args)
             elif args.command == "download-protocol-v5-gate-availability":
                 _download_protocol_v5_gate_availability(args)
+            elif args.command == "verify-protocol-v6-coinapi-access":
+                _verify_protocol_v6_coinapi_access()
             else:
                 _audit_protocol_v4_availability(args)
         except (OperationalSafetyError, ValueError) as exc:

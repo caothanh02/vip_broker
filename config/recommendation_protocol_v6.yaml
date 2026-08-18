@@ -1,6 +1,6 @@
 schema_version: "1.0"
 protocol_id: "recommendation_research_v6"
-status: "source_selected_access_verification_required"
+status: "source_selected_access_verification_authorized"
 source_selection:
   selection_basis: "license_provenance_entitlement_and_mechanical_availability_only"
   required_facts: ["license_or_terms_verified", "source_provenance_verified", "entitlement_verified", "btc_usdt_spot_1h_utc", "closed_candles_only", "absolute_continuity"]
@@ -11,8 +11,8 @@ data_source:
   internal_symbol: "BTC/USDT"
   market_type: "spot"
   timeframe: "1h"
-  authentication: "required_later_not_loaded_by_v6_governance"
-  endpoint: "not_enabled_until_access_verification"
+  authentication: "local_env_key_for_access_verification_only"
+  endpoint: "https://rest.coinapi.io/v1/symbols/BINANCE_SPOT_BTC_USDT"
 proposed_independent_range:
   start: "2019-01-01T00:00:00Z"
   end: "2022-01-01T00:00:00Z"
@@ -32,4 +32,5 @@ safety_locks:
   risk_engine_used: false
   dry_run_broker_used: false
   ml_used: false
+  access_verification_authorized: true
   network_used: false
