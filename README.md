@@ -35,9 +35,10 @@ The 2022–2024 development dataset is exhausted and closed to all V3 candidate 
 Protocol V3 is `closed_input_unavailable`: its independent 2019–2021 input could not meet the
 predeclared absolute-continuity requirement. This is not a strategy result; V3 cannot freeze,
 execute, select, or authorize OOS. Protocol V4 is `draft_availability_audit_required`, with no
-candidate or dataset yet; only a mechanical public-archive availability audit may propose a future
-range. OOS 2025 remains sealed and has not been opened. The project default is `NEUTRAL`, with no
-OOS accuracy claim, live trading, broker use, or order submission. See the
+candidate or dataset yet; its only implemented action is a checksum/continuity-only public archive
+audit that cannot select a range or evaluate strategy performance. OOS 2025 remains sealed and has
+not been opened. The project default is `NEUTRAL`, with no OOS accuracy claim, live trading, broker
+use, or order submission. See the
 [research protocol](docs/recommendation-research.md),
 [Protocol V3](docs/recommendation-protocol-v3.md), and
 [Protocol V4](docs/recommendation-protocol-v4.md), and

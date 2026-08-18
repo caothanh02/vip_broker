@@ -393,6 +393,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="new bundle directory directly under reports/research/manifests",
     )
+    audit_v4_availability = subcommands.add_parser(
+        "audit-protocol-v4-availability",
+        help="mechanically audit public archive availability without selecting or evaluating V4",
+    )
+    audit_v4_availability.add_argument("--start", type=parse_strict_utc, required=True)
+    audit_v4_availability.add_argument("--end", type=parse_strict_utc, required=True)
     experiment = subcommands.add_parser("run-recommendation-experiment")
     experiment.add_argument("--manifest", type=Path, required=True)
     experiment.add_argument("--candidate", required=True)
@@ -874,6 +880,15 @@ def _freeze_protocol_v3_input(args: argparse.Namespace) -> None:
     )
 
 
+def _audit_protocol_v4_availability(args: argparse.Namespace) -> None:
+    """Run only the bounded public-archive V4 availability audit."""
+
+    from trading_bot.recommendations.v4_availability_audit import audit_protocol_v4_availability
+
+    payload = asyncio.run(audit_protocol_v4_availability(args.start, args.end))
+    print(json.dumps(payload, indent=2))
+
+
 def _run_recommendation_experiment(args: argparse.Namespace, settings: BotSettings) -> None:
     result = run_development_experiment(
         args.manifest,
@@ -988,14 +1003,21 @@ def _run_strict_oos_recommendation_evaluation(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command in {"operational-status", "audit-safety", "freeze-protocol-v3-input"}:
+    if args.command in {
+        "operational-status",
+        "audit-safety",
+        "freeze-protocol-v3-input",
+        "audit-protocol-v4-availability",
+    }:
         try:
             if args.command == "operational-status":
                 _operational_status(args)
             elif args.command == "audit-safety":
                 _audit_safety(args)
-            else:
+            elif args.command == "freeze-protocol-v3-input":
                 _freeze_protocol_v3_input(args)
+            else:
+                _audit_protocol_v4_availability(args)
         except (OperationalSafetyError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
