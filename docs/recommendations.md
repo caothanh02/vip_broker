@@ -112,9 +112,10 @@ is `closed_input_unavailable` because its independent input did not meet predecl
 continuity; this is not a strategy result and cannot be repaired by changing its range or rules.
 [Protocol V4](recommendation-protocol-v4.md) is also `closed_input_unavailable` after its
 availability audit found no adequate continuous range. [Protocol V5](recommendation-protocol-v5.md)
-is `draft_source_selection_required`, with no source, candidate, parameters, dataset, input lock,
-selection artifact, or authorization. The safe project default is `NEUTRAL`; it is not investment
-advice or a trading instruction.
+is also `closed_input_unavailable`: Gate's public endpoint could not serve the preregistered
+2019–2022 input because it retains only the most recent 10,000 candlesticks. No data was
+published and no V5 candidate or authorization exists. The safe project default is `NEUTRAL`; it
+is not investment advice or a trading instruction.
 
 No selected candidate or sealed selection artifact exists. Therefore strict OOS 2025 must remain
 sealed: do not copy or run strict OOS freeze/evaluation commands, and do not create a selection

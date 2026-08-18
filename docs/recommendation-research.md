@@ -17,7 +17,7 @@ research and product-safe default is `NEUTRAL`; it is not investment advice or a
 instruction. New candidate research requires a separate governance decision and a new,
 independent development range that has not already been used for candidate selection.
 
-## Protocol V3/V4 closure and Protocol V5 draft
+## Protocol V3/V4/V5 input-availability closure
 
 Protocol V3 is `closed_input_unavailable`. Its independent target
 `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` failed the predeclared continuity requirement;
@@ -30,11 +30,11 @@ checksums but found 24 failed archives; the longest continuous block was only fo
 an input-availability finding, not a strategy result. V4 cannot audit, freeze, execute, select, or
 authorize OOS. See [the Protocol V4 closure record](recommendation-protocol-v4.md).
 
-Protocol V5 is `draft_source_selection_required`. It has no source, candidate, parameters,
-dataset range, input lock, selection artifact, or OOS authorization. Its only future governance
-decision may consider license, provenance and mechanical availability facts—never signals,
-returns, accuracy, backtests, PnL or performance metrics. See
-[the Protocol V5 draft](recommendation-protocol-v5.md).
+Protocol V5 is `closed_input_unavailable`: its selected Gate public endpoint rejected the fixed
+2019–2022 request because only the most recent 10,000 candlesticks are available. No data was
+published; V5 cannot retry, shorten its range, use a fallback source, freeze, execute, select or
+authorize OOS. This is an input-availability finding, not a strategy result. See
+[the Protocol V5 closure record](recommendation-protocol-v5.md).
 
 ## Development walk-forward protocol v1
 

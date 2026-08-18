@@ -1,4 +1,4 @@
-"""Regression coverage for candidate-free Protocol V5 source-audit governance."""
+"""Regression coverage for the immutable Protocol V5 input-availability closure."""
 
 from __future__ import annotations
 
@@ -21,12 +21,14 @@ def _raw_protocol() -> dict[str, object]:
     return raw
 
 
-def test_v5_selects_only_a_source_availability_audit() -> None:
+def test_v5_closes_after_gate_history_window_rejection() -> None:
     protocol = protocol_v5.load_protocol_v5(CONFIG_PATH)
     raw = _raw_protocol()
 
-    assert protocol.status == protocol_v5.PROTOCOL_V5_SOURCE_AUDIT_STATUS
+    assert protocol.status == protocol_v5.PROTOCOL_V5_CLOSED_STATUS
     assert protocol.executable is False
+    assert raw["availability_audit"]["outcome"] == "closed_source_history_window"
+    assert raw["availability_audit"]["observed_response"]["http_status"] == 400
     for key in (
         "candidate",
         "parameters",
@@ -35,9 +37,6 @@ def test_v5_selects_only_a_source_availability_audit() -> None:
         "selection_artifact",
     ):
         assert raw[key] is None
-    assert raw["data_source"] == protocol_v5._EXPECTED_CONFIG["data_source"]
-    assert protocol.availability_start.isoformat() == "2019-01-01T00:00:00+00:00"
-    assert protocol.availability_end.isoformat() == "2022-01-01T00:00:00+00:00"
 
 
 @pytest.mark.parametrize(
@@ -54,25 +53,25 @@ def test_v5_selects_only_a_source_availability_audit() -> None:
         lambda raw: raw["availability_audit"].__setitem__("outcome", "available"),
     ],
 )
-def test_v5_rejects_source_candidate_or_oos_mutation(mutation: object) -> None:
+def test_v5_rejects_all_post_closure_mutation(mutation: object) -> None:
     raw = deepcopy(_raw_protocol())
     assert callable(mutation)
     mutation(raw)
-    with pytest.raises(protocol_v5.ProtocolV5Error, match="immutable source-audit"):
+    with pytest.raises(protocol_v5.ProtocolV5Error, match="immutable closure"):
         protocol_v5.validate_protocol_v5(raw)
 
 
-def test_v5_allows_only_availability_audit_not_candidate_work() -> None:
+def test_v5_closure_blocks_every_future_action() -> None:
     protocol = protocol_v5.load_protocol_v5(CONFIG_PATH)
-    protocol_v5.require_protocol_v5_availability_audit(protocol)
     for action in (
+        protocol_v5.require_protocol_v5_availability_audit,
         protocol_v5.require_protocol_v5_source_ingest,
         protocol_v5.require_protocol_v5_input_freeze,
         protocol_v5.require_protocol_v5_execution,
         protocol_v5.require_protocol_v5_selection,
         protocol_v5.require_protocol_v5_oos_authorization,
     ):
-        with pytest.raises(protocol_v5.ProtocolV5Error, match="no candidate"):
+        with pytest.raises(protocol_v5.ProtocolV5Error, match="closed"):
             action(protocol)
 
 
