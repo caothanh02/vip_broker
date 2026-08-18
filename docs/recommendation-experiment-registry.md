@@ -110,3 +110,7 @@ Protocol V5 is `closed_input_unavailable`. Its selected Gate public endpoint rej
 No data was published and V5 cannot retry, alter its range, use a fallback source, freeze, execute,
 select or authorize OOS. This is an input-availability finding, not a strategy result. See
 [Protocol V5](recommendation-protocol-v5.md).
+
+Protocol V6 is `source_selected_access_verification_required`. CoinAPI is preregistered only as a
+potential source; no credential, network client, data ingest, candidate, input lock or OOS action
+is authorized. See [Protocol V6](recommendation-protocol-v6.md).
