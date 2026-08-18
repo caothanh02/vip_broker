@@ -21,4 +21,20 @@ trading-bot backtest --input data/raw/btcusdt_1h.csv --output reports/backtests/
 
 Running `download-data` again with the same output continues at the candle after the existing final candle. Use `--overwrite` only to replace the requested range after a successful validated download. The downloader retries bounded HTTP 429 and 5xx failures; malformed data, pagination stalls, duplicates, gaps, and CSV conflicts fail clearly without replacing an existing file.
 
+## Protocol V5 Gate availability audit
+
+`download-protocol-v5-gate-availability` is a separate, candidate-free availability audit. It has
+one immutable public source (`BTC_USDT` Spot, 1-hour UTC), one immutable range
+`[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)`, pages of at most 1,000 candles, and a one-second
+minimum interval between requests. It accepts no API key, symbol, timeframe, range or retry
+override:
+
+```text
+trading-bot download-protocol-v5-gate-availability
+```
+
+The command writes a new, ignored CSV and checksum metadata only when every requested candle is
+closed, contiguous, unique and valid. An existing output is never overwritten. A successful audit
+does not authorize a candidate, backtest, recommendation, input freeze or strict OOS evaluation.
+
 Backtests retain the project OHLC assumptions: signals are known only after a candle closes, entries and signal exits fill at a later candle open, and unknown intrabar ordering is treated conservatively. Binance history is one-exchange data and may be revised by the exchange.
