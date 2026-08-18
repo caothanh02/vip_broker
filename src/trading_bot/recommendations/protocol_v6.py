@@ -14,7 +14,7 @@ import yaml
 
 PROTOCOL_V6_ID = "recommendation_research_v6"
 PROTOCOL_V6_SCHEMA_VERSION = "1.0"
-PROTOCOL_V6_STATUS = "source_selected_access_verification_required"
+PROTOCOL_V6_STATUS = "source_selected_access_verification_authorized"
 
 
 class ProtocolV6Error(ValueError):
@@ -63,8 +63,8 @@ _EXPECTED: dict[str, object] = {
         "internal_symbol": "BTC/USDT",
         "market_type": "spot",
         "timeframe": "1h",
-        "authentication": "required_later_not_loaded_by_v6_governance",
-        "endpoint": "not_enabled_until_access_verification",
+        "authentication": "local_env_key_for_access_verification_only",
+        "endpoint": "https://rest.coinapi.io/v1/symbols/BINANCE_SPOT_BTC_USDT",
     },
     "proposed_independent_range": {"start": "2019-01-01T00:00:00Z", "end": "2022-01-01T00:00:00Z"},
     "candidate": None,
@@ -84,6 +84,7 @@ _EXPECTED: dict[str, object] = {
         "risk_engine_used": False,
         "dry_run_broker_used": False,
         "ml_used": False,
+        "access_verification_authorized": True,
         "network_used": False,
     },
 }
@@ -128,3 +129,14 @@ def load_protocol_v6(path: Path = Path("config/recommendation_protocol_v6.yaml")
 def require_protocol_v6_access_verified(protocol: ProtocolV6, action: str) -> None:
     del protocol
     raise ProtocolV6Error(f"protocol v6 access is unverified and cannot {action}")
+
+
+def require_protocol_v6_access_verification(protocol: ProtocolV6) -> None:
+    """Permit only the preregistered authenticated identity probe.
+
+    This does not authorize a historical OHLCV request, persistence, strategy
+    evaluation, selection, or strict-OOS activity.
+    """
+
+    if protocol.status != PROTOCOL_V6_STATUS:
+        raise ProtocolV6Error("protocol v6 access verification is not authorized")

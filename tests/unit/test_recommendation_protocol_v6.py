@@ -22,6 +22,7 @@ def test_v6_is_non_executable_preregistration() -> None:
     protocol = protocol_v6.load_protocol_v6(ROOT / "config/recommendation_protocol_v6.yaml")
     assert protocol.status == protocol_v6.PROTOCOL_V6_STATUS
     assert protocol.executable is False
+    protocol_v6.require_protocol_v6_access_verification(protocol)
 
 
 @pytest.mark.parametrize(
