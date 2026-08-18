@@ -1,7 +1,7 @@
-"""Fail-closed source-selection governance for unscoped Protocol V5.
+"""Fail-closed source governance for Protocol V5.
 
-V5 does not authorize a source, dataset, candidate, or research action. It
-records only the criteria for a future source-governance decision.
+V5 selects a public data source only for a mechanical availability audit. It
+does not authorize a candidate, research execution, selection, or OOS access.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from pathlib import Path
 import yaml
 
 PROTOCOL_V5_ID = "recommendation_research_v5"
-PROTOCOL_V5_SCHEMA_VERSION = "1.0"
-PROTOCOL_V5_DRAFT_STATUS = "draft_source_selection_required"
+PROTOCOL_V5_SCHEMA_VERSION = "1.1"
+PROTOCOL_V5_SOURCE_AUDIT_STATUS = "source_selected_availability_audit_required"
 
 
 class ProtocolV5Error(ValueError):
@@ -26,6 +26,8 @@ class ProtocolV5:
     protocol_id: str
     status: str
     strict_oos_start: datetime
+    availability_start: datetime
+    availability_end: datetime
 
     @property
     def executable(self) -> bool:
@@ -35,7 +37,7 @@ class ProtocolV5:
 _EXPECTED_CONFIG: dict[str, object] = {
     "schema_version": PROTOCOL_V5_SCHEMA_VERSION,
     "protocol_id": PROTOCOL_V5_ID,
-    "status": PROTOCOL_V5_DRAFT_STATUS,
+    "status": PROTOCOL_V5_SOURCE_AUDIT_STATUS,
     "source_selection": {
         "selection_basis": "license_provenance_and_mechanical_availability_only",
         "required_facts": [
@@ -54,7 +56,30 @@ _EXPECTED_CONFIG: dict[str, object] = {
             "performance_metric",
         ],
     },
-    "data_source": None,
+    "data_source": {
+        "provider": "gate_io_public_spot_rest",
+        "endpoint": "https://api.gateio.ws/api/v4/spot/candlesticks",
+        "exchange_symbol": "BTC_USDT",
+        "internal_symbol": "BTC/USDT",
+        "market_type": "spot",
+        "timeframe": "1h",
+        "authentication": "none",
+        "selection_evidence": [
+            "public_market_candlesticks_endpoint",
+            "btc_usdt_spot_1h_utc_contract",
+            "closed_candle_boundary_enforced_locally",
+            "one_request_per_second_pacing",
+        ],
+    },
+    "availability_audit": {
+        "utc_range": {
+            "start": "2019-01-01T00:00:00Z",
+            "end": "2022-01-01T00:00:00Z",
+        },
+        "request_page_candles": 1000,
+        "minimum_request_interval_seconds": 1,
+        "outcome": "pending",
+    },
     "candidate": None,
     "parameters": None,
     "development_dataset_range": None,
@@ -77,39 +102,58 @@ _EXPECTED_CONFIG: dict[str, object] = {
 }
 
 
-def _parse_utc(value: object) -> datetime:
+def _parse_utc(value: object, label: str) -> datetime:
     if not isinstance(value, str):
-        raise ProtocolV5Error("strict OOS start must be a UTC timestamp")
+        raise ProtocolV5Error(f"{label} must be a UTC timestamp")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise ProtocolV5Error("strict OOS start is invalid") from exc
+        raise ProtocolV5Error(f"{label} is invalid") from exc
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
-        raise ProtocolV5Error("strict OOS start must be UTC")
+        raise ProtocolV5Error(f"{label} must be UTC")
     return parsed.astimezone(UTC)
 
 
 def validate_protocol_v5(raw: object) -> ProtocolV5:
-    """Validate the exact V5 draft without reading data or source metadata."""
-
+    """Validate the exact source-audit contract without reading market input."""
     if not isinstance(raw, dict) or raw != _EXPECTED_CONFIG:
-        raise ProtocolV5Error("protocol v5 differs from its immutable draft governance")
+        raise ProtocolV5Error("protocol v5 differs from its immutable source-audit governance")
     strict_oos = raw["strict_oos"]
+    availability_audit = raw["availability_audit"]
     assert isinstance(strict_oos, dict)
-    return ProtocolV5(PROTOCOL_V5_ID, PROTOCOL_V5_DRAFT_STATUS, _parse_utc(strict_oos["start"]))
+    assert isinstance(availability_audit, dict)
+    utc_range = availability_audit["utc_range"]
+    assert isinstance(utc_range, dict)
+    strict_oos_start = _parse_utc(strict_oos["start"], "strict OOS start")
+    availability_start = _parse_utc(utc_range["start"], "availability audit start")
+    availability_end = _parse_utc(utc_range["end"], "availability audit end")
+    if availability_start >= availability_end or availability_end > strict_oos_start:
+        raise ProtocolV5Error("availability audit range is invalid")
+    return ProtocolV5(
+        PROTOCOL_V5_ID,
+        PROTOCOL_V5_SOURCE_AUDIT_STATUS,
+        strict_oos_start,
+        availability_start,
+        availability_end,
+    )
 
 
 def load_protocol_v5(path: Path = Path("config/recommendation_protocol_v5.yaml")) -> ProtocolV5:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
-        raise ProtocolV5Error("could not read protocol v5 draft") from exc
+        raise ProtocolV5Error("could not read protocol v5 source-audit governance") from exc
     return validate_protocol_v5(raw)
+
+
+def require_protocol_v5_availability_audit(protocol: ProtocolV5) -> None:
+    if protocol.status != PROTOCOL_V5_SOURCE_AUDIT_STATUS:
+        raise ProtocolV5Error("protocol v5 does not authorize a source availability audit")
 
 
 def _blocked(protocol: ProtocolV5, action: str) -> None:
     del protocol
-    raise ProtocolV5Error(f"protocol v5 is draft and cannot {action}")
+    raise ProtocolV5Error(f"protocol v5 has no candidate and cannot {action}")
 
 
 def require_protocol_v5_source_ingest(protocol: ProtocolV5) -> None:

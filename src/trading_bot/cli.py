@@ -399,6 +399,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     audit_v4_availability.add_argument("--start", type=parse_strict_utc, required=True)
     audit_v4_availability.add_argument("--end", type=parse_strict_utc, required=True)
+    download_v5_gate = subcommands.add_parser(
+        "download-protocol-v5-gate-availability",
+        help="download only the preregistered V5 Gate.io source-availability input",
+    )
+    download_v5_gate.add_argument(
+        "--output",
+        type=Path,
+        default=Path("data/raw/btcusdt_1h_v5_gate_2019_2022.csv"),
+    )
     experiment = subcommands.add_parser("run-recommendation-experiment")
     experiment.add_argument("--manifest", type=Path, required=True)
     experiment.add_argument("--candidate", required=True)
@@ -482,6 +491,52 @@ def _download(args: argparse.Namespace, settings: BotSettings) -> None:
         )
         payload = summary_json(summary)
     print(json.dumps(payload, indent=2))
+
+
+def _download_protocol_v5_gate_availability(args: argparse.Namespace) -> None:
+    """Run only the preregistered, public V5 availability download."""
+    from trading_bot.data.gate_historical import GateDataError, GateHistoricalDataClient
+    from trading_bot.data.historical import DataCoverageError, download_historical_csv, summary_json
+    from trading_bot.recommendations.protocol_v5 import (
+        ProtocolV5Error,
+        load_protocol_v5,
+        require_protocol_v5_availability_audit,
+    )
+
+    try:
+        protocol = load_protocol_v5()
+        require_protocol_v5_availability_audit(protocol)
+        if args.output.exists():
+            raise ValueError("V5 availability output already exists; it is never overwritten")
+        client = GateHistoricalDataClient()
+        summary = asyncio.run(
+            download_historical_csv(
+                client,
+                protocol.availability_start,
+                protocol.availability_end,
+                args.output,
+                overwrite=True,
+                metadata_overrides={
+                    "source": "Gate.io Spot public candlesticks",
+                    "market_type": "spot",
+                    "exchange_symbol": "BTC_USDT",
+                    "internal_symbol": "BTC/USDT",
+                    "timeframe": "1h",
+                    "source_endpoint": "https://api.gateio.ws/api/v4/spot/candlesticks",
+                    "authentication": "none",
+                    "request_page_candles": 1000,
+                    "minimum_request_interval_seconds": 1,
+                    "protocol_id": protocol.protocol_id,
+                    "protocol_status": protocol.status,
+                    "availability_audit_only": True,
+                },
+            )
+        )
+        if not verify_metadata_checksum(args.output):
+            raise DataCoverageError("V5 Gate download did not create verified metadata")
+    except (GateDataError, DataCoverageError, ProtocolV5Error) as exc:
+        raise ValueError(str(exc)) from exc
+    print(json.dumps(summary_json(summary), indent=2))
 
 
 def _validate(args: argparse.Namespace) -> None:
@@ -1008,6 +1063,7 @@ def main(argv: list[str] | None = None) -> int:
         "audit-safety",
         "freeze-protocol-v3-input",
         "audit-protocol-v4-availability",
+        "download-protocol-v5-gate-availability",
     }:
         try:
             if args.command == "operational-status":
@@ -1016,6 +1072,8 @@ def main(argv: list[str] | None = None) -> int:
                 _audit_safety(args)
             elif args.command == "freeze-protocol-v3-input":
                 _freeze_protocol_v3_input(args)
+            elif args.command == "download-protocol-v5-gate-availability":
+                _download_protocol_v5_gate_availability(args)
             else:
                 _audit_protocol_v4_availability(args)
         except (OperationalSafetyError, ValueError) as exc:

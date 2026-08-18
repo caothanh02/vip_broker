@@ -1,6 +1,6 @@
-schema_version: "1.0"
+schema_version: "1.1"
 protocol_id: "recommendation_research_v5"
-status: "draft_source_selection_required"
+status: "source_selected_availability_audit_required"
 source_selection:
   selection_basis: "license_provenance_and_mechanical_availability_only"
   required_facts:
@@ -16,7 +16,26 @@ source_selection:
     - "backtest"
     - "pnl"
     - "performance_metric"
-data_source: null
+data_source:
+  provider: "gate_io_public_spot_rest"
+  endpoint: "https://api.gateio.ws/api/v4/spot/candlesticks"
+  exchange_symbol: "BTC_USDT"
+  internal_symbol: "BTC/USDT"
+  market_type: "spot"
+  timeframe: "1h"
+  authentication: "none"
+  selection_evidence:
+    - "public_market_candlesticks_endpoint"
+    - "btc_usdt_spot_1h_utc_contract"
+    - "closed_candle_boundary_enforced_locally"
+    - "one_request_per_second_pacing"
+availability_audit:
+  utc_range:
+    start: "2019-01-01T00:00:00Z"
+    end: "2022-01-01T00:00:00Z"
+  request_page_candles: 1000
+  minimum_request_interval_seconds: 1
+  outcome: "pending"
 candidate: null
 parameters: null
 development_dataset_range: null

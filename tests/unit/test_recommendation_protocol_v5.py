@@ -1,4 +1,4 @@
-"""Regression coverage for the candidate-free Protocol V5 source draft."""
+"""Regression coverage for candidate-free Protocol V5 source-audit governance."""
 
 from __future__ import annotations
 
@@ -21,14 +21,13 @@ def _raw_protocol() -> dict[str, object]:
     return raw
 
 
-def test_v5_is_candidate_and_source_free_governance_draft() -> None:
+def test_v5_selects_only_a_source_availability_audit() -> None:
     protocol = protocol_v5.load_protocol_v5(CONFIG_PATH)
     raw = _raw_protocol()
 
-    assert protocol.status == protocol_v5.PROTOCOL_V5_DRAFT_STATUS
+    assert protocol.status == protocol_v5.PROTOCOL_V5_SOURCE_AUDIT_STATUS
     assert protocol.executable is False
     for key in (
-        "data_source",
         "candidate",
         "parameters",
         "development_dataset_range",
@@ -36,12 +35,15 @@ def test_v5_is_candidate_and_source_free_governance_draft() -> None:
         "selection_artifact",
     ):
         assert raw[key] is None
+    assert raw["data_source"] == protocol_v5._EXPECTED_CONFIG["data_source"]
+    assert protocol.availability_start.isoformat() == "2019-01-01T00:00:00+00:00"
+    assert protocol.availability_end.isoformat() == "2022-01-01T00:00:00+00:00"
 
 
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda raw: raw.__setitem__("data_source", {"name": "source"}),
+        lambda raw: raw["data_source"].__setitem__("endpoint", "https://other.example"),
         lambda raw: raw.__setitem__("candidate", {"id": "candidate"}),
         lambda raw: raw.__setitem__("parameters", {"ema": 20}),
         lambda raw: raw.__setitem__("development_dataset_range", {"start": "2019"}),
@@ -49,18 +51,20 @@ def test_v5_is_candidate_and_source_free_governance_draft() -> None:
         lambda raw: raw.__setitem__("selection_artifact", {"selected": True}),
         lambda raw: raw["strict_oos"].__setitem__("evaluation_authorized", True),
         lambda raw: raw["source_selection"].__setitem__("selection_basis", "accuracy"),
+        lambda raw: raw["availability_audit"].__setitem__("outcome", "available"),
     ],
 )
 def test_v5_rejects_source_candidate_or_oos_mutation(mutation: object) -> None:
     raw = deepcopy(_raw_protocol())
     assert callable(mutation)
     mutation(raw)
-    with pytest.raises(protocol_v5.ProtocolV5Error, match="immutable draft"):
+    with pytest.raises(protocol_v5.ProtocolV5Error, match="immutable source-audit"):
         protocol_v5.validate_protocol_v5(raw)
 
 
-def test_v5_draft_cannot_ingest_freeze_execute_select_or_authorize_oos() -> None:
+def test_v5_allows_only_availability_audit_not_candidate_work() -> None:
     protocol = protocol_v5.load_protocol_v5(CONFIG_PATH)
+    protocol_v5.require_protocol_v5_availability_audit(protocol)
     for action in (
         protocol_v5.require_protocol_v5_source_ingest,
         protocol_v5.require_protocol_v5_input_freeze,
@@ -68,7 +72,7 @@ def test_v5_draft_cannot_ingest_freeze_execute_select_or_authorize_oos() -> None
         protocol_v5.require_protocol_v5_selection,
         protocol_v5.require_protocol_v5_oos_authorization,
     ):
-        with pytest.raises(protocol_v5.ProtocolV5Error, match="draft"):
+        with pytest.raises(protocol_v5.ProtocolV5Error, match="no candidate"):
             action(protocol)
 
 

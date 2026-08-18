@@ -256,6 +256,7 @@ async def download_historical_csv(
     end: datetime,
     output: Path,
     overwrite: bool = False,
+    metadata_overrides: dict[str, object] | None = None,
 ) -> DownloadSummary:
     """Download closed 1h candles and atomically maintain one normalized CSV."""
     start, end = validate_hour_aligned_range(start, end)
@@ -273,26 +274,26 @@ async def download_historical_csv(
     _validate_requested_coverage(merged, start, effective_end)
     # Do not replace a valid existing file until the complete merged data is valid.
     persisted = write_candles_atomic(output, merged) if requests or overwrite else existing
-    write_metadata_atomic(
-        metadata_path(output),
-        {
-            "source": "Binance Spot public klines",
-            "market_type": "spot",
-            "exchange_symbol": "BTCUSDT",
-            "internal_symbol": "BTC/USDT",
-            "timeframe": "1h",
-            "requested_start": _iso(start),
-            "requested_end": _iso(end),
-            "effective_end": _iso(effective_end),
-            "stored_first_candle_open": _iso(persisted[0].open_time),
-            "stored_last_candle_close": _iso(persisted[-1].close_time),
-            "stored_candle_count": len(persisted),
-            "requested_range_candle_count": _requested_count(start, effective_end),
-            "csv_sha256": csv_sha256(output),
-            "downloaded_at": _iso(datetime.now(UTC)),
-            "schema_version": SCHEMA_VERSION,
-        },
-    )
+    metadata: dict[str, object] = {
+        "source": "Binance Spot public klines",
+        "market_type": "spot",
+        "exchange_symbol": "BTCUSDT",
+        "internal_symbol": "BTC/USDT",
+        "timeframe": "1h",
+        "requested_start": _iso(start),
+        "requested_end": _iso(end),
+        "effective_end": _iso(effective_end),
+        "stored_first_candle_open": _iso(persisted[0].open_time),
+        "stored_last_candle_close": _iso(persisted[-1].close_time),
+        "stored_candle_count": len(persisted),
+        "requested_range_candle_count": _requested_count(start, effective_end),
+        "csv_sha256": csv_sha256(output),
+        "downloaded_at": _iso(datetime.now(UTC)),
+        "schema_version": SCHEMA_VERSION,
+    }
+    if metadata_overrides is not None:
+        metadata.update(metadata_overrides)
+    write_metadata_atomic(metadata_path(output), metadata)
     return _summary(persisted, 0 if overwrite else len(existing), start, end, effective_end, output)
 
 
