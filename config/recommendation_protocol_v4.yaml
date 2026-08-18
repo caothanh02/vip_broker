@@ -1,6 +1,6 @@
-schema_version: "1.0"
+schema_version: "1.1"
 protocol_id: "recommendation_research_v4"
-status: "draft_availability_audit_required"
+status: "closed_input_unavailable"
 availability_audit:
   source: "public_binance_vision_archive_only"
   selection_basis: "mechanical_availability_only"
@@ -20,6 +20,24 @@ parameters: null
 development_dataset_range: null
 required_input_lock: null
 selection_artifact: null
+closure:
+  reason: "independent_continuous_input_unavailable"
+  strategy_result_evaluated: false
+  source_selection_authorized: false
+  input_freeze_authorized: false
+  execution_authorized: false
+  strict_oos_authorized: false
+  verified_availability_audit:
+    utc_range:
+      start: "2017-09-01T00:00:00Z"
+      end: "2022-01-01T00:00:00Z"
+    archive_count: 52
+    official_checksums_verified: true
+    failed_archive_count: 24
+    longest_continuous_block:
+      start: "2020-07-01T00:00:00Z"
+      end: "2020-11-01T00:00:00Z"
+      months: 4
 strict_oos:
   start: "2025-01-01T00:00:00Z"
   status: "sealed"

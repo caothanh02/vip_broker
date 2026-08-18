@@ -24,7 +24,12 @@ from trading_bot.data.binance_vision import (
     ArchiveTimestampQuality,
     parse_verified_archive_kline,
 )
-from trading_bot.recommendations.protocol_v4 import ProtocolV4, load_protocol_v4
+from trading_bot.recommendations.protocol_v4 import (
+    ProtocolV4,
+    ProtocolV4Error,
+    load_protocol_v4,
+    require_protocol_v4_availability_audit,
+)
 
 _BINANCE_VISION = "https://data.binance.vision/data/spot"
 _SYMBOL = "BTCUSDT"
@@ -255,6 +260,10 @@ async def audit_protocol_v4_availability(
     """Audit complete monthly archives without saving or evaluating market data."""
 
     protocol = load_protocol_v4()
+    try:
+        require_protocol_v4_availability_audit(protocol)
+    except ProtocolV4Error as exc:
+        raise ProtocolV4AvailabilityAuditError(str(exc)) from exc
     _require_month_range(start, end, protocol)
     base = base_url.rstrip("/")
     results: list[ArchiveAvailability] = []

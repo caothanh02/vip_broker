@@ -1,37 +1,19 @@
 # Recommendation research protocol V4
 
-**Status: `draft_availability_audit_required`.** V4 is not a candidate protocol. It has no
-candidate, parameters, development range, dataset, input lock, selection artifact, performance
-result, or OOS authorization.
+**Status: `closed_input_unavailable`.** V4 was not a candidate protocol and no strategy result,
+selection, OOS evaluation, recommendation or trading activity occurred.
 
-## Permitted next step
+## Closure record
 
-Only a mechanical availability audit of public Binance Vision archives may propose a future V4
-development range. The audit must require official checksum verification, BTC/USDT 1-hour UTC,
-closed candles, and absolute continuity. It must not inspect or use a signal, return, accuracy,
-backtest, or any performance metric to choose a range.
+V4 mechanically audited public Binance Vision BTC/USDT 1-hour UTC archives from
+`[2017-09-01T00:00:00Z, 2022-01-01T00:00:00Z)`. All 52 official archive checksums were verified,
+but 24 monthly archives failed the fixed continuity or timestamp policy. The longest continuous
+block was only `[2020-07-01T00:00:00Z, 2020-11-01T00:00:00Z)`, or four months.
 
-Any proposed range, candidate, parameters, costs, input lock, and selection rules require a new
-reviewed V4 revision before implementation or execution. Until then, strict OOS 2025 is sealed and
-the safe default remains `NEUTRAL`. This is research governance, not investment advice; no broker,
-order, live-trading, ML, credential, or exchange-runtime path is authorized.
+This is an input-availability finding, not evidence about a strategy. V4 must not change its
+continuity policy, retry with a fallback source, choose a range, freeze data, execute a candidate,
+select a policy or authorize strict OOS after observing these facts. Its audit command now fails
+closed before any network request.
 
-## Mechanical availability audit
-
-`trading-bot audit-protocol-v4-availability --start <UTC-month-boundary> --end
-<UTC-month-boundary>` is the only implemented V4 action. It reads public Binance Vision **monthly**
-ZIP archives and their official checksum sidecars into memory, verifies archive/member identity,
-closed 1-hour timestamps, and exact continuity, then prints a JSON result. It never writes a CSV,
-cache, report, dataset, manifest, or selection artifact; it does not use REST, compute a feature,
-signal, return, accuracy, backtest, or performance metric.
-
-For raw timestamp identity it applies the repository's fixed, checksum-bound Binance Vision policy:
-an early raw close of at most 60 seconds is canonicalized to its closed UTC hour and reported as an
-accepted timestamp anomaly. No known market interruption is passed to this audit, so every actual
-missing candle or larger/late timestamp deviation fails the absolute-continuity requirement.
-
-The command accepts only complete UTC calendar months ending no later than the sealed 2025 OOS
-boundary. A continuous result means `availability_verified_not_selected`: it may inform a later
-governance review, but does not choose a range, candidate, parameter, policy, or OOS action. Any
-request failure, checksum problem, malformed archive, open candle, duplicate, or gap returns
-`availability_not_verified` and remains fail-closed.
+The safe default remains `NEUTRAL`. No broker, order, live-trading, ML, credential, or OOS path is
+authorized. A new source decision belongs only to [Protocol V5](recommendation-protocol-v5.md).

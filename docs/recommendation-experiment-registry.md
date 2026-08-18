@@ -79,7 +79,7 @@ all 2025 OOS data sealed.
 | Deterministic regression | `tests/unit/test_trend_pullback_candidate.py` verifies the exact predicate, closed/gap handling, future-candle invariance, baseline dispatch, costs, and safety isolation. |
 | Selection rule | Exactly one v2 candidate; it must pass every predeclared fold and pooled gate. No selection retains `NEUTRAL`; it is never an OOS or public accuracy claim. |
 
-## Protocol V3 closure and Protocol V4 availability-audit draft
+## Protocol V3/V4 closure and Protocol V5 source-governance draft
 
 V3 is `closed_input_unavailable`: its predeclared BTC/USDT 1-hour UTC input
 `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` failed absolute continuity in verified public
@@ -100,8 +100,12 @@ not be changed after the finding. The authoritative closure record is
   semantics, and no broker/order/ML dependency. It is not a requirement or authorization for V4.
 - Selection rule: closed; no V3 run or input lock is permitted.
 
-Protocol V4 is `draft_availability_audit_required`. It has no candidate, parameters, dataset
-range, input lock, selection artifact, or OOS authorization. Its only permitted next step is a
-mechanical public Binance Vision availability audit based solely on official checksum, BTC/USDT
-1-hour UTC, closed-candle, and absolute-continuity facts—not signal, return, accuracy, backtest,
-or performance metrics. See [Protocol V4](recommendation-protocol-v4.md).
+Protocol V4 is `closed_input_unavailable`. Its mechanical Binance Vision audit covered 52 monthly
+archives from 2017-09 through 2022-01: checksums verified, but 24 archives failed continuity or
+timestamp policy and the longest continuous block was four months. It cannot audit, freeze,
+execute, select, or authorize OOS. See [Protocol V4](recommendation-protocol-v4.md).
+
+Protocol V5 is `draft_source_selection_required`. It has no source, candidate, parameters, range,
+input lock, selection artifact, or OOS authorization. A future governance review may use only
+license, provenance, and mechanical availability facts—not signal, return, accuracy, backtest, PnL
+or performance metrics. See [Protocol V5](recommendation-protocol-v5.md).

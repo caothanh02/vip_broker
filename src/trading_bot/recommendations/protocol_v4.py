@@ -1,8 +1,8 @@
-"""Fail-closed governance contract for unscoped Protocol V4.
+"""Immutable closure record for Protocol V4.
 
-V4 has no candidate or input.  It can only be advanced after a separately
-reviewed, mechanical public-archive availability audit; this module never
-opens data, computes a signal, or imports runtime/trading dependencies.
+V4's public archive availability audit found no suitable continuous input.
+The protocol is therefore closed and no longer permits a network, data, or
+research action.
 """
 
 from __future__ import annotations
@@ -14,8 +14,9 @@ from pathlib import Path
 import yaml
 
 PROTOCOL_V4_ID = "recommendation_research_v4"
-PROTOCOL_V4_SCHEMA_VERSION = "1.0"
+PROTOCOL_V4_SCHEMA_VERSION = "1.1"
 PROTOCOL_V4_DRAFT_STATUS = "draft_availability_audit_required"
+PROTOCOL_V4_CLOSED_STATUS = "closed_input_unavailable"
 
 
 class ProtocolV4Error(ValueError):
@@ -36,7 +37,7 @@ class ProtocolV4:
 _EXPECTED_CONFIG: dict[str, object] = {
     "schema_version": PROTOCOL_V4_SCHEMA_VERSION,
     "protocol_id": PROTOCOL_V4_ID,
-    "status": PROTOCOL_V4_DRAFT_STATUS,
+    "status": PROTOCOL_V4_CLOSED_STATUS,
     "availability_audit": {
         "source": "public_binance_vision_archive_only",
         "selection_basis": "mechanical_availability_only",
@@ -59,6 +60,28 @@ _EXPECTED_CONFIG: dict[str, object] = {
     "development_dataset_range": None,
     "required_input_lock": None,
     "selection_artifact": None,
+    "closure": {
+        "reason": "independent_continuous_input_unavailable",
+        "strategy_result_evaluated": False,
+        "source_selection_authorized": False,
+        "input_freeze_authorized": False,
+        "execution_authorized": False,
+        "strict_oos_authorized": False,
+        "verified_availability_audit": {
+            "utc_range": {
+                "start": "2017-09-01T00:00:00Z",
+                "end": "2022-01-01T00:00:00Z",
+            },
+            "archive_count": 52,
+            "official_checksums_verified": True,
+            "failed_archive_count": 24,
+            "longest_continuous_block": {
+                "start": "2020-07-01T00:00:00Z",
+                "end": "2020-11-01T00:00:00Z",
+                "months": 4,
+            },
+        },
+    },
     "strict_oos": {
         "start": "2025-01-01T00:00:00Z",
         "status": "sealed",
@@ -89,33 +112,38 @@ def _parse_utc(value: object) -> datetime:
 
 
 def validate_protocol_v4(raw: object) -> ProtocolV4:
-    """Validate the exact draft without reading an input or candidate result."""
+    """Validate the exact closure record without reading any market input."""
 
     if not isinstance(raw, dict) or raw != _EXPECTED_CONFIG:
-        raise ProtocolV4Error("protocol v4 differs from its immutable draft governance")
+        raise ProtocolV4Error("protocol v4 differs from its immutable closure record")
     strict_oos = raw["strict_oos"]
     assert isinstance(strict_oos, dict)
-    return ProtocolV4(PROTOCOL_V4_ID, PROTOCOL_V4_DRAFT_STATUS, _parse_utc(strict_oos["start"]))
+    return ProtocolV4(PROTOCOL_V4_ID, PROTOCOL_V4_CLOSED_STATUS, _parse_utc(strict_oos["start"]))
 
 
 def load_protocol_v4(path: Path = Path("config/recommendation_protocol_v4.yaml")) -> ProtocolV4:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
-        raise ProtocolV4Error("could not read protocol v4 draft") from exc
+        raise ProtocolV4Error("could not read protocol v4 closure record") from exc
     return validate_protocol_v4(raw)
+
+
+def require_protocol_v4_availability_audit(protocol: ProtocolV4) -> None:
+    del protocol
+    raise ProtocolV4Error("protocol v4 is closed and cannot audit an input source")
 
 
 def require_protocol_v4_input_freeze(protocol: ProtocolV4) -> None:
     del protocol
-    raise ProtocolV4Error("protocol v4 is draft and cannot freeze an input")
+    raise ProtocolV4Error("protocol v4 is closed and cannot freeze an input")
 
 
 def require_protocol_v4_execution(protocol: ProtocolV4) -> None:
     del protocol
-    raise ProtocolV4Error("protocol v4 is draft and cannot be executed")
+    raise ProtocolV4Error("protocol v4 is closed and cannot be executed")
 
 
 def require_protocol_v4_oos_authorization(protocol: ProtocolV4) -> None:
     del protocol
-    raise ProtocolV4Error("protocol v4 is draft and cannot authorize strict OOS")
+    raise ProtocolV4Error("protocol v4 is closed and cannot authorize strict OOS")
