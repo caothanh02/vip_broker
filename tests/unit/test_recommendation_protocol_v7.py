@@ -18,31 +18,32 @@ def _raw() -> dict[str, object]:
     return value
 
 
-def test_v7_is_non_executable_and_allows_only_availability_audit() -> None:
+def test_v7_is_closed_and_blocks_every_action() -> None:
     protocol = protocol_v7.load_protocol_v7(ROOT / "config/recommendation_protocol_v7.yaml")
+    assert protocol.status == protocol_v7.PROTOCOL_V7_CLOSED_STATUS
     assert protocol.executable is False
     assert protocol.expected_candle_count == 26304
-    protocol_v7.require_protocol_v7_availability_audit(protocol)
     for require in (
+        protocol_v7.require_protocol_v7_availability_audit,
         protocol_v7.require_protocol_v7_input_freeze,
         protocol_v7.require_protocol_v7_execution,
         protocol_v7.require_protocol_v7_selection,
         protocol_v7.require_protocol_v7_oos_authorization,
     ):
-        with pytest.raises(protocol_v7.ProtocolV7Error, match="cannot"):
+        with pytest.raises(protocol_v7.ProtocolV7Error, match="closed"):
             require(protocol)
 
 
 @pytest.mark.parametrize(
     "path",
     [
-        ("data_source", "endpoint"),
+        ("availability_audit", "outcome"),
         ("availability_audit", "expected_candle_count"),
-        ("candidate",),
+        ("closure", "reason"),
         ("strict_oos", "evaluation_authorized"),
     ],
 )
-def test_v7_rejects_governance_mutation(path: tuple[str, ...]) -> None:
+def test_v7_rejects_closure_mutation(path: tuple[str, ...]) -> None:
     value = deepcopy(_raw())
     target: object = value
     for key in path[:-1]:

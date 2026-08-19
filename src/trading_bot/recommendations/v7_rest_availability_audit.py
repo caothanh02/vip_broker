@@ -1,7 +1,7 @@
-"""Full-range public Binance REST availability audit for Protocol V7.
+"""Closed Protocol V7 public Binance REST availability-audit command.
 
-This audit reads a fixed historical range only to verify mechanical availability.
-It does not persist candles or compute any signal, performance, or recommendation.
+V7's prior in-memory audit did not meet its fixed validation contract. This
+command is retained only to reject a retry before constructing a network client.
 """
 
 from __future__ import annotations

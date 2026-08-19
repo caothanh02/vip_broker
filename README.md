@@ -37,7 +37,10 @@ predeclared absolute-continuity requirement. These are not strategy results; nei
 freeze, execute, select, or authorize OOS. Protocol V5 is `closed_input_unavailable`: Gate.io's
 public endpoint rejected the preregistered 2019–2022 request because its history window is too
 short. No data was published and V5 cannot retry, change range or use a fallback source. OOS 2025
-remains sealed and has not been opened. The project default is `NEUTRAL`, with no OOS accuracy
+remains sealed and has not been opened. Protocol V7 is `closed_input_unavailable`: its free public
+Binance REST full-range audit did not meet the same closed-continuous OHLCV validation, so no data
+was published and it cannot retry or change the source/range. The project default is `NEUTRAL`,
+with no OOS accuracy
 claim, live trading, broker use, or order submission. See the
 [research protocol](docs/recommendation-research.md),
 [Protocol V3](docs/recommendation-protocol-v3.md), and

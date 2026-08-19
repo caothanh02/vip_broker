@@ -1,7 +1,7 @@
-"""Immutable public-REST availability governance for Protocol V7.
+"""Immutable closure record for Protocol V7.
 
-V7 permits only a mechanical audit of one fixed historical range. It does not
-authorize persistence, research execution, policy selection, or strict OOS.
+The public REST full-range audit did not meet V7's fixed validation contract.
+V7 now authorizes no further network, persistence, research, or OOS action.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from pathlib import Path
 import yaml
 
 PROTOCOL_V7_ID = "recommendation_research_v7"
-PROTOCOL_V7_SCHEMA_VERSION = "1.0"
-PROTOCOL_V7_SOURCE_AUDIT_STATUS = "source_selected_availability_audit_authorized"
+PROTOCOL_V7_SCHEMA_VERSION = "1.1"
+PROTOCOL_V7_CLOSED_STATUS = "closed_input_unavailable"
 
 
 class ProtocolV7Error(ValueError):
@@ -38,7 +38,7 @@ class ProtocolV7:
 _EXPECTED: dict[str, object] = {
     "schema_version": PROTOCOL_V7_SCHEMA_VERSION,
     "protocol_id": PROTOCOL_V7_ID,
-    "status": PROTOCOL_V7_SOURCE_AUDIT_STATUS,
+    "status": PROTOCOL_V7_CLOSED_STATUS,
     "source_selection": {
         "selection_basis": "license_provenance_and_mechanical_availability_only",
         "required_facts": [
@@ -71,7 +71,16 @@ _EXPECTED: dict[str, object] = {
         "utc_range": {"start": "2019-01-01T00:00:00Z", "end": "2022-01-01T00:00:00Z"},
         "request_page_candles": 1000,
         "expected_candle_count": 26304,
-        "outcome": "pending",
+        "outcome": "failed_full_range_validation",
+        "observed_at": "2026-08-19T07:10:09Z",
+    },
+    "closure": {
+        "reason": "public_rest_full_range_did_not_meet_closed_continuous_ohlcv_validation",
+        "strategy_result_evaluated": False,
+        "source_selection_authorized": False,
+        "input_freeze_authorized": False,
+        "execution_authorized": False,
+        "strict_oos_authorized": False,
     },
     "candidate": None,
     "parameters": None,
@@ -125,7 +134,7 @@ def validate_protocol_v7(raw: object) -> ProtocolV7:
         raise ProtocolV7Error("expected candle count is invalid")
     if start >= end or end > oos_start or (end - start) // timedelta(hours=1) != count:
         raise ProtocolV7Error("availability audit range is invalid")
-    return ProtocolV7(PROTOCOL_V7_ID, PROTOCOL_V7_SOURCE_AUDIT_STATUS, start, end, oos_start, count)
+    return ProtocolV7(PROTOCOL_V7_ID, PROTOCOL_V7_CLOSED_STATUS, start, end, oos_start, count)
 
 
 def load_protocol_v7(path: Path = Path("config/recommendation_protocol_v7.yaml")) -> ProtocolV7:
@@ -137,13 +146,13 @@ def load_protocol_v7(path: Path = Path("config/recommendation_protocol_v7.yaml")
 
 
 def require_protocol_v7_availability_audit(protocol: ProtocolV7) -> None:
-    if protocol.status != PROTOCOL_V7_SOURCE_AUDIT_STATUS:
-        raise ProtocolV7Error("protocol v7 does not authorize a source availability audit")
+    del protocol
+    raise ProtocolV7Error("protocol v7 is closed and cannot audit an input source")
 
 
 def _blocked(protocol: ProtocolV7, action: str) -> None:
     del protocol
-    raise ProtocolV7Error(f"protocol v7 has no candidate and cannot {action}")
+    raise ProtocolV7Error(f"protocol v7 is closed and cannot {action}")
 
 
 def require_protocol_v7_input_freeze(protocol: ProtocolV7) -> None:
