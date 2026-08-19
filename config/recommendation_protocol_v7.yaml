@@ -1,6 +1,6 @@
-schema_version: "1.0"
+schema_version: "1.1"
 protocol_id: "recommendation_research_v7"
-status: "source_selected_availability_audit_authorized"
+status: "closed_input_unavailable"
 source_selection:
   selection_basis: "license_provenance_and_mechanical_availability_only"
   required_facts: ["public_unauthenticated_endpoint", "source_provenance_verified", "btc_usdt_spot_1h_utc", "closed_candles_only", "absolute_continuity"]
@@ -20,7 +20,15 @@ availability_audit:
     end: "2022-01-01T00:00:00Z"
   request_page_candles: 1000
   expected_candle_count: 26304
-  outcome: "pending"
+  outcome: "failed_full_range_validation"
+  observed_at: "2026-08-19T07:10:09Z"
+closure:
+  reason: "public_rest_full_range_did_not_meet_closed_continuous_ohlcv_validation"
+  strategy_result_evaluated: false
+  source_selection_authorized: false
+  input_freeze_authorized: false
+  execution_authorized: false
+  strict_oos_authorized: false
 candidate: null
 parameters: null
 development_dataset_range: null

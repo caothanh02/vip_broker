@@ -115,6 +115,7 @@ Protocol V6 permits only a bounded CoinAPI access verification. Its provider rej
 authenticated metadata request with HTTP 403, so it cannot ingest, freeze, execute, select or
 authorize OOS. See [Protocol V6](recommendation-protocol-v6.md).
 
-Protocol V7 is a separate public-Binance-REST availability audit for the fixed 2019-2022 range.
-It has no candidate and may not persist data, execute research, select a policy or authorize OOS.
-See [Protocol V7](recommendation-protocol-v7.md).
+Protocol V7 is closed_input_unavailable: its public-Binance-REST full-range audit did not meet
+the fixed closed-continuous OHLCV validation. No data was published, and V7 cannot retry, alter
+the source/range, execute research, select a policy or authorize OOS. See
+[Protocol V7](recommendation-protocol-v7.md).
