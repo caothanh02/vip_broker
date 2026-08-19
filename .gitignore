@@ -17,6 +17,7 @@ __pycache__/
 .pytest-v5-closure*/
 .pytest-v6-governance*/
 .pytest-v6-access*/
+.pytest-v7-audit*/
 .mypy_cache/
 .ruff_cache/
 data/raw/*
