@@ -412,6 +412,10 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-protocol-v6-coinapi-access",
         help="make one authenticated V6 CoinAPI symbol-identity request; no OHLCV is read",
     )
+    subcommands.add_parser(
+        "audit-protocol-v7-binance-rest-availability",
+        help="audit fixed public Binance REST availability without persisting market data",
+    )
     experiment = subcommands.add_parser("run-recommendation-experiment")
     experiment.add_argument("--manifest", type=Path, required=True)
     experiment.add_argument("--candidate", required=True)
@@ -960,6 +964,17 @@ def _verify_protocol_v6_coinapi_access() -> None:
     print(json.dumps(payload, indent=2))
 
 
+def _audit_protocol_v7_binance_rest_availability() -> None:
+    """Run only V7's fixed public-source mechanical availability audit."""
+
+    from trading_bot.recommendations.v7_rest_availability_audit import (
+        audit_protocol_v7_binance_rest_availability,
+    )
+
+    payload = asyncio.run(audit_protocol_v7_binance_rest_availability())
+    print(json.dumps(payload, indent=2))
+
+
 def _run_recommendation_experiment(args: argparse.Namespace, settings: BotSettings) -> None:
     result = run_development_experiment(
         args.manifest,
@@ -1081,6 +1096,7 @@ def main(argv: list[str] | None = None) -> int:
         "audit-protocol-v4-availability",
         "download-protocol-v5-gate-availability",
         "verify-protocol-v6-coinapi-access",
+        "audit-protocol-v7-binance-rest-availability",
     }:
         try:
             if args.command == "operational-status":
@@ -1093,6 +1109,8 @@ def main(argv: list[str] | None = None) -> int:
                 _download_protocol_v5_gate_availability(args)
             elif args.command == "verify-protocol-v6-coinapi-access":
                 _verify_protocol_v6_coinapi_access()
+            elif args.command == "audit-protocol-v7-binance-rest-availability":
+                _audit_protocol_v7_binance_rest_availability()
             else:
                 _audit_protocol_v4_availability(args)
         except (OperationalSafetyError, ValueError) as exc:

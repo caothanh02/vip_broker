@@ -111,6 +111,10 @@ No data was published and V5 cannot retry, alter its range, use a fallback sourc
 select or authorize OOS. This is an input-availability finding, not a strategy result. See
 [Protocol V5](recommendation-protocol-v5.md).
 
-Protocol V6 is `source_selected_access_verification_required`. CoinAPI is preregistered only as a
-potential source; no credential, network client, data ingest, candidate, input lock or OOS action
-is authorized. See [Protocol V6](recommendation-protocol-v6.md).
+Protocol V6 permits only a bounded CoinAPI access verification. Its provider rejected the
+authenticated metadata request with HTTP 403, so it cannot ingest, freeze, execute, select or
+authorize OOS. See [Protocol V6](recommendation-protocol-v6.md).
+
+Protocol V7 is a separate public-Binance-REST availability audit for the fixed 2019-2022 range.
+It has no candidate and may not persist data, execute research, select a policy or authorize OOS.
+See [Protocol V7](recommendation-protocol-v7.md).

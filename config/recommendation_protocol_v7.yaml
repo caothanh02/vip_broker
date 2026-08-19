@@ -1,0 +1,40 @@
+schema_version: "1.0"
+protocol_id: "recommendation_research_v7"
+status: "source_selected_availability_audit_authorized"
+source_selection:
+  selection_basis: "license_provenance_and_mechanical_availability_only"
+  required_facts: ["public_unauthenticated_endpoint", "source_provenance_verified", "btc_usdt_spot_1h_utc", "closed_candles_only", "absolute_continuity"]
+  prohibited_selection_inputs: ["signal", "return", "accuracy", "backtest", "pnl", "performance_metric"]
+data_source:
+  provider: "binance_spot_public_rest"
+  endpoint: "https://api.binance.com/api/v3/klines"
+  exchange_symbol: "BTCUSDT"
+  internal_symbol: "BTC/USDT"
+  market_type: "spot"
+  timeframe: "1h"
+  timezone: "UTC"
+  authentication: "none"
+availability_audit:
+  utc_range:
+    start: "2019-01-01T00:00:00Z"
+    end: "2022-01-01T00:00:00Z"
+  request_page_candles: 1000
+  expected_candle_count: 26304
+  outcome: "pending"
+candidate: null
+parameters: null
+development_dataset_range: null
+required_input_lock: null
+selection_artifact: null
+strict_oos:
+  start: "2025-01-01T00:00:00Z"
+  status: "sealed"
+  evaluation_authorized: false
+safety_locks:
+  live_trading_enabled: false
+  broker_used: false
+  orders_submitted: false
+  risk_engine_used: false
+  dry_run_broker_used: false
+  ml_used: false
+  network_used: false
