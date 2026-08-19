@@ -64,7 +64,7 @@ _EXPECTED: dict[str, object] = {
         "market_type": "spot",
         "timeframe": "1h",
         "authentication": "local_env_key_for_access_verification_only",
-        "endpoint": "https://rest.coinapi.io/v1/symbols/BINANCE_SPOT_BTC_USDT",
+        "endpoint": "https://rest.coinapi.io/v1/symbols?filter_symbol_id=BINANCE_SPOT_BTC_USDT",
     },
     "proposed_independent_range": {"start": "2019-01-01T00:00:00Z", "end": "2022-01-01T00:00:00Z"},
     "candidate": None,
