@@ -416,6 +416,10 @@ def build_parser() -> argparse.ArgumentParser:
         "audit-protocol-v7-binance-rest-availability",
         help="audit fixed public Binance REST availability without persisting market data",
     )
+    subcommands.add_parser(
+        "audit-protocol-v8-coinapi-historical-availability",
+        help="audit fixed CoinAPI availability without persisting market data",
+    )
     experiment = subcommands.add_parser("run-recommendation-experiment")
     experiment.add_argument("--manifest", type=Path, required=True)
     experiment.add_argument("--candidate", required=True)
@@ -975,6 +979,20 @@ def _audit_protocol_v7_binance_rest_availability() -> None:
     print(json.dumps(payload, indent=2))
 
 
+def _audit_protocol_v8_coinapi_historical_availability() -> None:
+    """Run only V8's bounded authenticated historical availability audit."""
+
+    from trading_bot.recommendations.v6_access_verification import load_local_coinapi_key
+    from trading_bot.recommendations.v8_coinapi_availability_audit import (
+        audit_protocol_v8_coinapi_historical_availability,
+    )
+
+    payload = asyncio.run(
+        audit_protocol_v8_coinapi_historical_availability(load_local_coinapi_key())
+    )
+    print(json.dumps(payload, indent=2))
+
+
 def _run_recommendation_experiment(args: argparse.Namespace, settings: BotSettings) -> None:
     result = run_development_experiment(
         args.manifest,
@@ -1097,6 +1115,7 @@ def main(argv: list[str] | None = None) -> int:
         "download-protocol-v5-gate-availability",
         "verify-protocol-v6-coinapi-access",
         "audit-protocol-v7-binance-rest-availability",
+        "audit-protocol-v8-coinapi-historical-availability",
     }:
         try:
             if args.command == "operational-status":
@@ -1111,6 +1130,8 @@ def main(argv: list[str] | None = None) -> int:
                 _verify_protocol_v6_coinapi_access()
             elif args.command == "audit-protocol-v7-binance-rest-availability":
                 _audit_protocol_v7_binance_rest_availability()
+            elif args.command == "audit-protocol-v8-coinapi-historical-availability":
+                _audit_protocol_v8_coinapi_historical_availability()
             else:
                 _audit_protocol_v4_availability(args)
         except (OperationalSafetyError, ValueError) as exc:
