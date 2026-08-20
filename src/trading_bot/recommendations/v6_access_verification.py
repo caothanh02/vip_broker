@@ -1,6 +1,7 @@
 """Bounded authenticated CoinAPI identity verification for Protocol V6.
 
-The only network action is one metadata request for the preregistered symbol.
+The only network action is one filtered metadata-collection request for the
+preregistered symbol.
 It does not request OHLCV, persist data, build features, or authorize research.
 """
 
@@ -15,7 +16,7 @@ from trading_bot.recommendations.protocol_v6 import (
     require_protocol_v6_access_verification,
 )
 
-_COINAPI_SYMBOL_URL = "https://rest.coinapi.io/v1/symbols/BINANCE_SPOT_BTC_USDT"
+_COINAPI_SYMBOLS_URL = "https://rest.coinapi.io/v1/symbols"
 _EXPECTED_IDENTITY = {
     "symbol_id": "BINANCE_SPOT_BTC_USDT",
     "exchange_id": "BINANCE",
@@ -42,11 +43,14 @@ def load_local_coinapi_key() -> str:
     return api_key
 
 
-def _validate_symbol_payload(payload: object) -> None:
-    if not isinstance(payload, dict):
+def _validate_symbol_collection(payload: object) -> None:
+    if not isinstance(payload, list) or len(payload) != 1:
+        raise ProtocolV6AccessVerificationError("CoinAPI symbol metadata is invalid")
+    symbol = payload[0]
+    if not isinstance(symbol, dict):
         raise ProtocolV6AccessVerificationError("CoinAPI symbol metadata is invalid")
     for field, expected in _EXPECTED_IDENTITY.items():
-        if payload.get(field) != expected:
+        if symbol.get(field) != expected:
             raise ProtocolV6AccessVerificationError(
                 "CoinAPI symbol identity does not match Protocol V6"
             )
@@ -57,7 +61,7 @@ async def verify_protocol_v6_coinapi_access(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> dict[str, object]:
-    """Verify one authenticated symbol-metadata response without reading OHLCV."""
+    """Verify one authenticated filtered-symbol response without reading OHLCV."""
 
     protocol = load_protocol_v6()
     try:
@@ -72,7 +76,8 @@ async def verify_protocol_v6_coinapi_access(
     try:
         async with httpx.AsyncClient(timeout=20, transport=transport) as client:
             response = await client.get(
-                _COINAPI_SYMBOL_URL,
+                _COINAPI_SYMBOLS_URL,
+                params={"filter_symbol_id": _EXPECTED_IDENTITY["symbol_id"]},
                 headers={"Accept": "application/json", "X-CoinAPI-Key": api_key},
             )
             response.raise_for_status()
@@ -86,7 +91,7 @@ async def verify_protocol_v6_coinapi_access(
         ) from exc
 
     try:
-        _validate_symbol_payload(response.json())
+        _validate_symbol_collection(response.json())
     except ValueError as exc:
         raise ProtocolV6AccessVerificationError("CoinAPI symbol metadata is invalid") from exc
 
@@ -94,7 +99,7 @@ async def verify_protocol_v6_coinapi_access(
         "schema_version": "1.0",
         "protocol_id": PROTOCOL_V6_ID,
         "protocol_status": protocol.status,
-        "verification_kind": "authenticated_symbol_metadata_identity_only",
+        "verification_kind": "authenticated_filtered_symbol_collection_identity_only",
         "provider": "coinapi_historical_ohlcv",
         "symbol_id": _EXPECTED_IDENTITY["symbol_id"],
         "symbol_identity_verified": True,

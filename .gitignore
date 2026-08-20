@@ -17,6 +17,7 @@ __pycache__/
 .pytest-v5-closure*/
 .pytest-v6-governance*/
 .pytest-v6-access*/
+.pytest-v6-symbol-collection*/
 .pytest-v7-audit*/
 .pytest-v7-closure*/
 .mypy_cache/

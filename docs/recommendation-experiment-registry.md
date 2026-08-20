@@ -111,9 +111,10 @@ No data was published and V5 cannot retry, alter its range, use a fallback sourc
 select or authorize OOS. This is an input-availability finding, not a strategy result. See
 [Protocol V5](recommendation-protocol-v5.md).
 
-Protocol V6 permits only a bounded CoinAPI access verification. Its provider rejected the
-authenticated metadata request with HTTP 403, so it cannot ingest, freeze, execute, select or
-authorize OOS. See [Protocol V6](recommendation-protocol-v6.md).
+Protocol V6 permits only a bounded CoinAPI access verification. Its initial singleton metadata
+endpoint returned HTTP 550; the corrected filtered-symbol collection check verified the fixed
+identity without requesting OHLCV. Historical-OHLCV entitlement remains unverified, so V6 cannot
+ingest, freeze, execute, select or authorize OOS. See [Protocol V6](recommendation-protocol-v6.md).
 
 Protocol V7 is closed_input_unavailable: its public-Binance-REST full-range audit did not meet
 the fixed closed-continuous OHLCV validation. No data was published, and V7 cannot retry, alter

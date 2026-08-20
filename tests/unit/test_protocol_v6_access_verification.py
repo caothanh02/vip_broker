@@ -22,15 +22,17 @@ def _symbol_metadata() -> dict[str, str]:
     }
 
 
-def test_access_verification_uses_only_fixed_symbol_metadata_endpoint() -> None:
+def test_access_verification_uses_only_fixed_filtered_symbol_metadata_endpoint() -> None:
     api_key = "test-access-key-never-published"
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
-        assert str(request.url) == "https://rest.coinapi.io/v1/symbols/BINANCE_SPOT_BTC_USDT"
+        assert str(request.url) == (
+            "https://rest.coinapi.io/v1/symbols?filter_symbol_id=BINANCE_SPOT_BTC_USDT"
+        )
         assert request.headers["X-CoinAPI-Key"] == api_key
         assert "api_key" not in str(request.url).lower()
-        return httpx.Response(200, json=_symbol_metadata(), request=request)
+        return httpx.Response(200, json=[_symbol_metadata()], request=request)
 
     payload = asyncio.run(
         v6_access_verification.verify_protocol_v6_coinapi_access(
@@ -58,8 +60,9 @@ def test_missing_key_fails_before_network_request() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        {},
-        {**_symbol_metadata(), "asset_id_quote": "USD"},
+        [],
+        [{**_symbol_metadata(), "asset_id_quote": "USD"}],
+        [_symbol_metadata(), _symbol_metadata()],
         ["not", "an", "object"],
     ],
 )

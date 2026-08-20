@@ -36,9 +36,10 @@ published; V5 cannot retry, shorten its range, use a fallback source, freeze, ex
 authorize OOS. This is an input-availability finding, not a strategy result. See
 [the Protocol V5 closure record](recommendation-protocol-v5.md).
 
-Protocol V6 is `source_selected_access_verification_required`: CoinAPI is only a preregistered
-potential source. No credential, network access, data ingest, candidate, input lock or OOS action
-is authorized. See [the Protocol V6 preregistration](recommendation-protocol-v6.md).
+Protocol V6 is `source_selected_access_verification_authorized`: its bounded authenticated
+filtered-symbol identity check has completed, but CoinAPI is still only a preregistered potential
+source. Historical-OHLCV entitlement has not been verified, so data ingest, candidate, input lock
+and OOS actions remain unauthorized. See [the Protocol V6 preregistration](recommendation-protocol-v6.md).
 
 ## Development walk-forward protocol v1
 
