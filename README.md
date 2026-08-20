@@ -1,6 +1,6 @@
 # BTC/USDT Spot Trading Bot
 
-Safe, reproducible research, backtesting and paper-trading infrastructure for one market: BTC/USDT on 1-hour closed candles. It is not financial advice. Crypto is volatile; this repository does not enable live trading and no API key is needed.
+Safe, reproducible research, backtesting and paper-trading infrastructure for one market: BTC/USDT on 1-hour closed candles. It is not financial advice. Crypto is volatile; this repository does not enable live trading. Core public-data workflows need no API key; the optional CoinAPI availability audit reads a local-only key.
 
 ## Architecture
 
@@ -48,6 +48,7 @@ claim, live trading, broker use, or order submission. See the
 [Protocol V5](docs/recommendation-protocol-v5.md), and
 [Protocol V6](docs/recommendation-protocol-v6.md), and
 [Protocol V7](docs/recommendation-protocol-v7.md), and
+[Protocol V8](docs/recommendation-protocol-v8.md), and
 [experiment registry](docs/recommendation-experiment-registry.md).
 
 Strict OOS is a dormant safety boundary, not a currently authorized workflow. It would require a

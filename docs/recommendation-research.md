@@ -41,6 +41,10 @@ filtered-symbol identity check has completed, but CoinAPI is still only a prereg
 source. Historical-OHLCV entitlement has not been verified, so data ingest, candidate, input lock
 and OOS actions remain unauthorized. See [the Protocol V6 preregistration](recommendation-protocol-v6.md).
 
+Protocol V8 is `source_selected_historical_availability_audit_authorized`. It is an independent,
+bounded authenticated CoinAPI audit of `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` only; it
+does not persist data or authorize research/OOS. See [the Protocol V8 preregistration](recommendation-protocol-v8.md).
+
 ## Development walk-forward protocol v1
 
 This is the pre-registered governance protocol for development research. It applies before a new
