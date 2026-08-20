@@ -982,14 +982,11 @@ def _audit_protocol_v7_binance_rest_availability() -> None:
 def _audit_protocol_v8_coinapi_historical_availability() -> None:
     """Run only V8's bounded authenticated historical availability audit."""
 
-    from trading_bot.recommendations.v6_access_verification import load_local_coinapi_key
     from trading_bot.recommendations.v8_coinapi_availability_audit import (
         audit_protocol_v8_coinapi_historical_availability,
     )
 
-    payload = asyncio.run(
-        audit_protocol_v8_coinapi_historical_availability(load_local_coinapi_key())
-    )
+    payload = asyncio.run(audit_protocol_v8_coinapi_historical_availability())
     print(json.dumps(payload, indent=2))
 
 

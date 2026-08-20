@@ -1,6 +1,6 @@
-schema_version: "1.0"
+schema_version: "1.1"
 protocol_id: "recommendation_research_v8"
-status: "source_selected_historical_availability_audit_authorized"
+status: "closed_input_unavailable"
 source_selection:
   selection_basis: "license_provenance_authenticated_identity_and_mechanical_availability_only"
   required_facts: ["license_or_terms_verified", "source_provenance_verified", "authenticated_symbol_identity", "authenticated_historical_read_access", "btc_usdt_spot_1h_utc", "closed_candles_only", "absolute_continuity"]
@@ -23,9 +23,18 @@ availability_audit:
   request_page_candles: 1000
   expected_candle_count: 26304
   maximum_request_count: 28
+  outcome: "failed_provider_rejection"
+  observed_at: "2026-08-20T06:06:10Z"
   data_persistence_authorized: false
   candidate_or_parameter_authorized: false
   recommendation_or_backtest_authorized: false
+  strict_oos_authorized: false
+closure:
+  reason: "authenticated_coinapi_availability_audit_request_rejected"
+  audit_retry_authorized: false
+  input_freeze_authorized: false
+  execution_authorized: false
+  selection_authorized: false
   strict_oos_authorized: false
 candidate: null
 parameters: null

@@ -41,9 +41,9 @@ filtered-symbol identity check has completed, but CoinAPI is still only a prereg
 source. Historical-OHLCV entitlement has not been verified, so data ingest, candidate, input lock
 and OOS actions remain unauthorized. See [the Protocol V6 preregistration](recommendation-protocol-v6.md).
 
-Protocol V8 is `source_selected_historical_availability_audit_authorized`. It is an independent,
-bounded authenticated CoinAPI audit of `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` only; it
-does not persist data or authorize research/OOS. See [the Protocol V8 preregistration](recommendation-protocol-v8.md).
+Protocol V8 is `closed_input_unavailable`: its single authenticated CoinAPI availability audit was
+rejected by the provider. No data was published, and V8 cannot retry, alter the range/source,
+freeze, execute, select or authorize OOS. See [the Protocol V8 closure record](recommendation-protocol-v8.md).
 
 ## Development walk-forward protocol v1
 

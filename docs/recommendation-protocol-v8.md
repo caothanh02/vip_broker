@@ -1,22 +1,13 @@
 # Recommendation research protocol V8
 
-**Status: `source_selected_historical_availability_audit_authorized`.** Protocol V8 is a new,
-independent CoinAPI input-availability protocol. It does not alter V1--V7, their inputs, candidate
-decisions, or the sealed 2025 OOS boundary.
+**Status: `closed_input_unavailable`.** The single authorized CoinAPI availability audit was run
+at `2026-08-20T06:06:10Z` and the provider rejected its request. No data was persisted and no
+strategy result was evaluated.
 
-The only authorized command is
-`trading-bot audit-protocol-v8-coinapi-historical-availability`. It reads `COINAPI_API_KEY` from
-local `.env`, verifies exactly one `BINANCE_SPOT_BTC_USDT` Spot identity, then requests the fixed
-UTC 1-hour range `[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)` in memory. It makes at most 28
-requests: one metadata identity request and at most 27 pages of 1,000 candles.
+V8 is now closed: `audit-protocol-v8-coinapi-historical-availability` fails before reading local
+credentials or constructing a network client. It cannot retry, change the range/source, persist an
+input, execute research, select a policy or authorize strict OOS. The default remains `NEUTRAL`;
+no broker, order, live-trading or ML path is loaded.
 
-Every received row must be a closed UTC 1-hour BTC/USDT candle with finite OHLCV, coherent trade
-timestamps, strict order, no duplicates and absolute continuity. An HTTP error, malformed payload,
-open candle, gap, duplicate, count mismatch or request-bound breach fails closed. There is no
-fallback source, range change, automatic retry, CSV/report/manifest write or data cache.
-
-A successful audit proves only authenticated API read access and mechanical availability at audit
-time. It does not verify CoinAPI licence/terms, authorize input persistence, candidate or parameter
-work, feature/signal calculation, recommendation/backtest execution, selection or strict OOS.
-Those actions remain fail-closed; the default remains `NEUTRAL`, and no broker, order, live-trading
-or ML path is loaded.
+This is an input-availability finding, not a strategy or investment result. A future provider would
+require a new independent protocol rather than a V8 fallback or retry.

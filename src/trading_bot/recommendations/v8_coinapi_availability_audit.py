@@ -128,7 +128,7 @@ async def _get_json(
 
 
 async def audit_protocol_v8_coinapi_historical_availability(
-    api_key: str,
+    api_key: str | None = None,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
     now: datetime | None = None,
@@ -140,6 +140,10 @@ async def audit_protocol_v8_coinapi_historical_availability(
         require_protocol_v8_availability_audit(protocol)
     except ProtocolV8Error as exc:
         raise ProtocolV8AvailabilityAuditError(str(exc)) from exc
+    if api_key is None:
+        from trading_bot.recommendations.v6_access_verification import load_local_coinapi_key
+
+        api_key = load_local_coinapi_key()
     if not api_key.strip():
         raise ProtocolV8AvailabilityAuditError(
             "COINAPI_API_KEY is required for V8 availability audit"

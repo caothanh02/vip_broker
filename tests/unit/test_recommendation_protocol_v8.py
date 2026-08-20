@@ -18,11 +18,12 @@ def _raw() -> dict[str, object]:
     return value
 
 
-def test_v8_is_non_executable_and_permits_only_availability_audit() -> None:
+def test_v8_is_non_executable_and_closed_to_availability_audit() -> None:
     protocol = protocol_v8.load_protocol_v8(ROOT / "config/recommendation_protocol_v8.yaml")
-    assert protocol.status == protocol_v8.PROTOCOL_V8_STATUS
+    assert protocol.status == protocol_v8.PROTOCOL_V8_CLOSED_STATUS
     assert protocol.executable is False
-    protocol_v8.require_protocol_v8_availability_audit(protocol)
+    with pytest.raises(protocol_v8.ProtocolV8Error, match="closed"):
+        protocol_v8.require_protocol_v8_availability_audit(protocol)
 
 
 @pytest.mark.parametrize(
