@@ -1,8 +1,7 @@
-"""Immutable governance for the bounded CoinAPI historical availability audit.
+"""Immutable closure record for Protocol V8.
 
-Protocol V8 is independent from the closed public-source protocols. It permits
-only an in-memory authenticated identity and availability audit; it does not
-permit persistence, research execution, policy selection, or strict OOS.
+The one authorized CoinAPI availability audit was rejected by the provider.
+V8 now permits no credential access, network retry, persistence, research or OOS.
 """
 
 from __future__ import annotations
@@ -14,8 +13,8 @@ from pathlib import Path
 import yaml
 
 PROTOCOL_V8_ID = "recommendation_research_v8"
-PROTOCOL_V8_SCHEMA_VERSION = "1.0"
-PROTOCOL_V8_STATUS = "source_selected_historical_availability_audit_authorized"
+PROTOCOL_V8_SCHEMA_VERSION = "1.1"
+PROTOCOL_V8_CLOSED_STATUS = "closed_input_unavailable"
 
 
 class ProtocolV8Error(ValueError):
@@ -41,7 +40,7 @@ class ProtocolV8:
 _EXPECTED: dict[str, object] = {
     "schema_version": PROTOCOL_V8_SCHEMA_VERSION,
     "protocol_id": PROTOCOL_V8_ID,
-    "status": PROTOCOL_V8_STATUS,
+    "status": PROTOCOL_V8_CLOSED_STATUS,
     "source_selection": {
         "selection_basis": (
             "license_provenance_authenticated_identity_and_mechanical_availability_only"
@@ -81,9 +80,19 @@ _EXPECTED: dict[str, object] = {
         "request_page_candles": 1000,
         "expected_candle_count": 26304,
         "maximum_request_count": 28,
+        "outcome": "failed_provider_rejection",
+        "observed_at": "2026-08-20T06:06:10Z",
         "data_persistence_authorized": False,
         "candidate_or_parameter_authorized": False,
         "recommendation_or_backtest_authorized": False,
+        "strict_oos_authorized": False,
+    },
+    "closure": {
+        "reason": "authenticated_coinapi_availability_audit_request_rejected",
+        "audit_retry_authorized": False,
+        "input_freeze_authorized": False,
+        "execution_authorized": False,
+        "selection_authorized": False,
         "strict_oos_authorized": False,
     },
     "candidate": None,
@@ -147,7 +156,7 @@ def validate_protocol_v8(raw: object) -> ProtocolV8:
         raise ProtocolV8Error("availability audit request bound is invalid")
     return ProtocolV8(
         PROTOCOL_V8_ID,
-        PROTOCOL_V8_STATUS,
+        PROTOCOL_V8_CLOSED_STATUS,
         start,
         end,
         strict_oos_start,
@@ -166,8 +175,8 @@ def load_protocol_v8(path: Path = Path("config/recommendation_protocol_v8.yaml")
 
 
 def require_protocol_v8_availability_audit(protocol: ProtocolV8) -> None:
-    if protocol.status != PROTOCOL_V8_STATUS:
-        raise ProtocolV8Error("protocol v8 availability audit is not authorized")
+    del protocol
+    raise ProtocolV8Error("protocol v8 is closed and cannot audit an input source")
 
 
 def _blocked(protocol: ProtocolV8, action: str) -> None:

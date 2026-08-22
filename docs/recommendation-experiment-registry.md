@@ -121,6 +121,6 @@ the fixed closed-continuous OHLCV validation. No data was published, and V7 cann
 the source/range, execute research, select a policy or authorize OOS. See
 [Protocol V7](recommendation-protocol-v7.md).
 
-Protocol V8 is an independent, bounded CoinAPI historical-availability audit. It may only verify
-the fixed 2019--2022 BTC/USDT 1-hour range in memory; it cannot persist data, execute a candidate,
-select a policy or authorize OOS. See [Protocol V8](recommendation-protocol-v8.md).
+Protocol V8 is `closed_input_unavailable`: its single authenticated CoinAPI availability audit was
+rejected by the provider. No data was published; it cannot retry, alter the source/range, execute
+research, select a policy or authorize OOS. See [Protocol V8](recommendation-protocol-v8.md).

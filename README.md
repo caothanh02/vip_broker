@@ -39,7 +39,9 @@ public endpoint rejected the preregistered 2019–2022 request because its histo
 short. No data was published and V5 cannot retry, change range or use a fallback source. OOS 2025
 remains sealed and has not been opened. Protocol V7 is `closed_input_unavailable`: its free public
 Binance REST full-range audit did not meet the same closed-continuous OHLCV validation, so no data
-was published and it cannot retry or change the source/range. The project default is `NEUTRAL`,
+was published and it cannot retry or change the source/range. Protocol V8 is also
+`closed_input_unavailable`: its single authenticated CoinAPI availability audit was rejected, so it
+cannot retry, change source/range or publish data. The project default remains `NEUTRAL`,
 with no OOS accuracy
 claim, live trading, broker use, or order submission. See the
 [research protocol](docs/recommendation-research.md),
