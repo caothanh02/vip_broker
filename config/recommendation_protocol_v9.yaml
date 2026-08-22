@@ -1,0 +1,50 @@
+schema_version: "1.0"
+protocol_id: "recommendation_research_v9"
+status: "source_selected_availability_audit_authorized"
+source_selection:
+  selection_basis: "license_provenance_paid_entitlement_and_mechanical_availability_only"
+  required_facts: ["license_or_terms_verified", "source_provenance_verified", "paid_entitlement_context", "authenticated_symbol_identity", "authenticated_historical_read_access", "btc_usdt_spot_1h_utc", "closed_candles_only", "absolute_continuity"]
+  prohibited_selection_inputs: ["signal", "return", "accuracy", "backtest", "pnl", "performance_metric"]
+data_source:
+  provider: "coinapi_historical_ohlcv"
+  identity_endpoint: "https://rest.coinapi.io/v1/symbols?filter_symbol_id=BINANCE_SPOT_BTC_USDT"
+  historical_endpoint: "https://rest.coinapi.io/v1/ohlcv/BINANCE_SPOT_BTC_USDT/history"
+  exchange_symbol: "BINANCE_SPOT_BTC_USDT"
+  internal_symbol: "BTC/USDT"
+  market_type: "spot"
+  timeframe: "1h"
+  period_id: "1HRS"
+  timezone: "UTC"
+  authentication: "local_env_key_for_availability_audit_only"
+entitlement_context:
+  basis: "separately_confirmed_paid_coinapi_credit_balance_after_v8_closure"
+  credential_name: "COINAPI_API_KEY"
+  historical_access_verified: false
+availability_audit:
+  utc_range:
+    start: "2019-01-01T00:00:00Z"
+    end: "2022-01-01T00:00:00Z"
+  request_page_candles: 1000
+  expected_candle_count: 26304
+  maximum_request_count: 28
+  data_persistence_authorized: false
+  candidate_or_parameter_authorized: false
+  recommendation_or_backtest_authorized: false
+  strict_oos_authorized: false
+candidate: null
+parameters: null
+development_dataset_range: null
+required_input_lock: null
+selection_artifact: null
+strict_oos:
+  start: "2025-01-01T00:00:00Z"
+  status: "sealed"
+  evaluation_authorized: false
+safety_locks:
+  live_trading_enabled: false
+  broker_used: false
+  orders_submitted: false
+  risk_engine_used: false
+  dry_run_broker_used: false
+  ml_used: false
+  network_used: false
