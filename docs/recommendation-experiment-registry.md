@@ -124,3 +124,9 @@ the source/range, execute research, select a policy or authorize OOS. See
 Protocol V8 is `closed_input_unavailable`: its single authenticated CoinAPI availability audit was
 rejected by the provider. No data was published; it cannot retry, alter the source/range, execute
 research, select a policy or authorize OOS. See [Protocol V8](recommendation-protocol-v8.md).
+
+Protocol V9 is `source_selected_availability_audit_authorized`. It is a separate governance record
+for a paid CoinAPI entitlement context after V8 closed; it is not a V8 retry or a candidate record.
+No V9 availability audit has run. Until a separately reviewed audit passes, V9 cannot persist or
+freeze data, execute research, select a policy, or authorize OOS. See
+[Protocol V9](recommendation-protocol-v9.md).

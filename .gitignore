@@ -22,6 +22,7 @@ __pycache__/
 .pytest-v8-closure*/
 .pytest-v7-audit*/
 .pytest-v7-closure*/
+.pytest-v9-preregistration*/
 .mypy_cache/
 .ruff_cache/
 data/raw/*

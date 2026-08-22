@@ -51,7 +51,11 @@ claim, live trading, broker use, or order submission. See the
 [Protocol V6](docs/recommendation-protocol-v6.md), and
 [Protocol V7](docs/recommendation-protocol-v7.md), and
 [Protocol V8](docs/recommendation-protocol-v8.md), and
+[Protocol V9](docs/recommendation-protocol-v9.md), and
 [experiment registry](docs/recommendation-experiment-registry.md).
+
+Protocol V9 is a new, unexecuted paid-entitlement availability-only preregistration; it does not
+retry V8 or authorize data persistence, research, OOS, broker use, or a non-`NEUTRAL` policy.
 
 Strict OOS is a dormant safety boundary, not a currently authorized workflow. It would require a
 clean deterministic source identity and a sealed artifact from exactly one selected development

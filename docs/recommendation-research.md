@@ -45,6 +45,11 @@ Protocol V8 is `closed_input_unavailable`: its single authenticated CoinAPI avai
 rejected by the provider. No data was published, and V8 cannot retry, alter the range/source,
 freeze, execute, select or authorize OOS. See [the Protocol V8 closure record](recommendation-protocol-v8.md).
 
+Protocol V9 is `source_selected_availability_audit_authorized`: it is a separate, paid-entitlement
+preregistration after V8's closure, not a V8 retry. It has not run an audit and cannot persist data,
+freeze an input, execute research, select a policy, or authorize OOS. See
+[the Protocol V9 preregistration](recommendation-protocol-v9.md).
+
 ## Development walk-forward protocol v1
 
 This is the pre-registered governance protocol for development research. It applies before a new
