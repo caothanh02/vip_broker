@@ -1,8 +1,7 @@
-"""Fail-closed CoinAPI paid-entitlement preregistration for Protocol V9.
+"""Immutable closure record for Protocol V9.
 
-V9 is a pure governance record. It has no credential, network, market-data,
-candidate, broker, order, ML, or OOS runtime dependency. A later, separately
-reviewed availability-audit implementation must call its narrow authorization.
+The single authorized paid CoinAPI availability audit was rejected. V9 permits
+no credential access, network retry, persistence, research, or OOS activity.
 """
 
 from __future__ import annotations
@@ -14,8 +13,8 @@ from pathlib import Path
 import yaml
 
 PROTOCOL_V9_ID = "recommendation_research_v9"
-PROTOCOL_V9_SCHEMA_VERSION = "1.0"
-PROTOCOL_V9_STATUS = "source_selected_availability_audit_authorized"
+PROTOCOL_V9_SCHEMA_VERSION = "1.1"
+PROTOCOL_V9_STATUS = "closed_input_unavailable"
 
 
 class ProtocolV9Error(ValueError):
@@ -87,9 +86,19 @@ _EXPECTED: dict[str, object] = {
         "request_page_candles": 1000,
         "expected_candle_count": 26304,
         "maximum_request_count": 28,
+        "outcome": "failed_provider_rejection",
+        "observed_at": "2026-08-24T03:39:47Z",
         "data_persistence_authorized": False,
         "candidate_or_parameter_authorized": False,
         "recommendation_or_backtest_authorized": False,
+        "strict_oos_authorized": False,
+    },
+    "closure": {
+        "reason": "authenticated_paid_coinapi_availability_audit_request_rejected",
+        "audit_retry_authorized": False,
+        "input_freeze_authorized": False,
+        "execution_authorized": False,
+        "selection_authorized": False,
         "strict_oos_authorized": False,
     },
     "candidate": None,
@@ -170,10 +179,10 @@ def load_protocol_v9(path: Path = Path("config/recommendation_protocol_v9.yaml")
 
 
 def require_protocol_v9_availability_audit(protocol: ProtocolV9) -> None:
-    """Authorize only a separately implemented bounded availability audit."""
+    """Reject V9 before any credential or network dependency is reached."""
 
-    if protocol.status != PROTOCOL_V9_STATUS:
-        raise ProtocolV9Error("protocol v9 availability audit is not authorized")
+    del protocol
+    raise ProtocolV9Error("protocol v9 is closed and cannot audit an input source")
 
 
 def require_protocol_v9_blocked(protocol: ProtocolV9, action: str) -> None:

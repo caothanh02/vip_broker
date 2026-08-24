@@ -1,21 +1,17 @@
 # Recommendation research protocol V9
 
-**Status: `source_selected_availability_audit_authorized`.** V9 is a new, independent
-governance record following V8's closed authenticated request. It records a separately confirmed
-paid CoinAPI entitlement context, but does **not** claim that historical OHLCV access works.
+**Status: `closed_input_unavailable`.** The single authorized paid CoinAPI availability audit ran
+at `2026-08-24T03:39:47Z`; the provider rejected its request. No data was persisted and no strategy
+result was evaluated.
 
-The sole action authorized by V9 is a bounded availability audit
-for `BINANCE_SPOT_BTC_USDT`, 1-hour UTC candles over
-`[2019-01-01T00:00:00Z, 2022-01-01T00:00:00Z)`. It may make at most 28 requests (one identity
-request plus 27 pages of at most 1,000 candles) and must validate symbol identity, closed candles,
-UTC timestamps, duplicates, gaps and exact continuity in memory.
+V9 is now closed: `audit-protocol-v9-coinapi-historical-availability` fails before reading a local
+credential or constructing a network client. It cannot retry, change the source/range, persist an
+input, execute research, select a policy or authorize strict OOS.
 
-The command is `audit-protocol-v9-coinapi-historical-availability`. It reads a local
-`COINAPI_API_KEY` only when explicitly invoked; it publishes no file or data and does not run as
-part of installation, tests, operational checks or any recommendation command. V9 cannot
-persist/download an input, freeze a manifest, execute a candidate or backtest, select a policy, or
-authorize strict OOS. The 2025 holdout remains sealed and the product default remains `NEUTRAL`;
-there is no broker, order, live-trading or ML path.
+The 2025 holdout remains sealed and the product default remains `NEUTRAL`; there is no broker,
+order, live-trading or ML path. This is an input-availability finding, not a strategy result,
+accuracy claim, or investment recommendation. Any future paid provider/account context requires a
+new independent protocol rather than a V9 fallback or retry.
 
 V8 remains closed and is never retried. A V9 audit result is an input-availability finding, never a
 strategy result, accuracy claim, or investment recommendation.
