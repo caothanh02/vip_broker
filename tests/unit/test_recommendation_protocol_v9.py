@@ -18,11 +18,12 @@ def _raw() -> dict[str, object]:
     return value
 
 
-def test_v9_is_non_executable_and_only_authorizes_its_availability_audit() -> None:
+def test_v9_is_non_executable_and_closed_to_its_availability_audit() -> None:
     protocol = protocol_v9.load_protocol_v9(ROOT / "config/recommendation_protocol_v9.yaml")
     assert protocol.status == protocol_v9.PROTOCOL_V9_STATUS
     assert protocol.executable is False
-    protocol_v9.require_protocol_v9_availability_audit(protocol)
+    with pytest.raises(protocol_v9.ProtocolV9Error, match="closed"):
+        protocol_v9.require_protocol_v9_availability_audit(protocol)
 
 
 @pytest.mark.parametrize(
@@ -32,6 +33,8 @@ def test_v9_is_non_executable_and_only_authorizes_its_availability_audit() -> No
         ("entitlement_context", "historical_access_verified"),
         ("availability_audit", "utc_range", "end"),
         ("availability_audit", "maximum_request_count"),
+        ("availability_audit", "outcome"),
+        ("closure", "audit_retry_authorized"),
         ("candidate",),
         ("strict_oos", "evaluation_authorized"),
     ],
