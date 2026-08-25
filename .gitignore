@@ -25,6 +25,7 @@ __pycache__/
 .pytest-v9-preregistration*/
 .pytest-v9-audit*/
 .pytest-v9-closure*/
+.pytest-v10-preregistration*/
 .mypy_cache/
 .ruff_cache/
 data/raw/*

@@ -52,12 +52,18 @@ claim, live trading, broker use, or order submission. See the
 [Protocol V7](docs/recommendation-protocol-v7.md), and
 [Protocol V8](docs/recommendation-protocol-v8.md), and
 [Protocol V9](docs/recommendation-protocol-v9.md), and
+[Protocol V10](docs/recommendation-protocol-v10.md), and
 [experiment registry](docs/recommendation-experiment-registry.md).
 
 Protocol V9 was a separate paid-entitlement availability-only preregistration; it did not retry V8
 or authorize data persistence, research, OOS, broker use, or a non-`NEUTRAL` policy. Its single
 authorized audit was rejected by CoinAPI, so V9 is now `closed_input_unavailable` and cannot retry
 or change source/range.
+
+Protocol V10 is a separate, unexecuted Tardis Binance Spot trade-data preregistration over the
+ fixed `[2019-04-01, 2022-04-01)` UTC range. It only authorizes a future single metadata identity
+ probe; that probe cannot establish historical-download entitlement;
+it cannot download or aggregate trades, persist data, research, select a policy, or open OOS.
 
 Strict OOS is a dormant safety boundary, not a currently authorized workflow. It would require a
 clean deterministic source identity and a sealed artifact from exactly one selected development
