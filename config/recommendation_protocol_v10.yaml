@@ -1,0 +1,69 @@
+schema_version: "1.0"
+protocol_id: "recommendation_research_v10"
+status: "source_selected_metadata_identity_probe_authorized"
+source_selection:
+  selection_basis: "license_provenance_paid_entitlement_and_mechanical_availability_only"
+  required_facts: ["license_or_terms_verified", "source_provenance_verified", "paid_entitlement_context", "authenticated_symbol_identity", "authenticated_historical_read_access", "btc_usdt_spot_1h_utc", "closed_candles_only", "absolute_continuity"]
+  prohibited_selection_inputs: ["signal", "return", "accuracy", "backtest", "pnl", "performance_metric"]
+data_source:
+  provider: "tardis_binance_spot_trade_csv"
+  metadata_endpoint: "https://api.tardis.dev/v1/instruments/binance/BTCUSDT"
+  dataset_url_template: "https://datasets.tardis.dev/v1/binance/trades/{year}/{month}/{day}/BTCUSDT.csv.gz"
+  exchange: "binance"
+  exchange_symbol: "BTCUSDT"
+  internal_symbol: "BTC/USDT"
+  market_type: "spot"
+  source_data_type: "trades"
+  candle_aggregation: "exchange_event_timestamp_utc_to_1h_ohlcv"
+  timezone: "UTC"
+  authentication: "local_env_key_for_metadata_identity_probe_only"
+entitlement_context:
+  credential_name: "TARDIS_API_KEY"
+  historical_access_verified: false
+  metadata_identity_verified: false
+  metadata_probe_proves_historical_access: false
+proposed_independent_range:
+  start: "2019-04-01T00:00:00Z"
+  end: "2022-04-01T00:00:00Z"
+  expected_candle_count: 26304
+metadata_identity_probe:
+  maximum_request_count: 1
+  response_contract:
+    required_fields: ["id", "datasetId", "exchange", "baseCurrency", "quoteCurrency", "type", "availableSince"]
+    expected_id: "BTCUSDT"
+    expected_dataset_id: "BTCUSDT"
+    expected_exchange: "binance"
+    expected_base_currency: "BTC"
+    expected_quote_currency: "USDT"
+    expected_type: "spot"
+    available_since_must_be_at_or_before: "2019-04-01T00:00:00Z"
+  data_persistence_authorized: false
+  candle_aggregation_authorized: false
+  candidate_or_parameter_authorized: false
+  recommendation_or_backtest_authorized: false
+  strict_oos_authorized: false
+raw_trade_boundary_policy:
+  source_partition_timestamp: "provider_local_timestamp_utc"
+  target_candle_timestamp: "exchange_event_timestamp_utc"
+  finite_boundary_partition_set_preregistered: false
+  exchange_event_filter_preregistered: false
+  duplicate_trade_policy_preregistered: false
+  aggregation_authorized: false
+  fail_closed_rule: "a later independently preregistered protocol must bind a documented finite partition set, exchange-event filter, deduplication rule, and continuity evidence before any raw trade download or candle aggregation"
+candidate: null
+parameters: null
+development_dataset_range: null
+required_input_lock: null
+selection_artifact: null
+strict_oos:
+  start: "2025-01-01T00:00:00Z"
+  status: "sealed"
+  evaluation_authorized: false
+safety_locks:
+  live_trading_enabled: false
+  broker_used: false
+  orders_submitted: false
+  risk_engine_used: false
+  dry_run_broker_used: false
+  ml_used: false
+  network_used: false

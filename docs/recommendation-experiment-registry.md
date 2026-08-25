@@ -128,3 +128,10 @@ research, select a policy or authorize OOS. See [Protocol V8](recommendation-pro
 Protocol V9 is `closed_input_unavailable`: its single authenticated paid-CoinAPI availability audit
 was rejected. No data was published; it cannot retry, alter the source/range, execute research,
 select a policy or authorize OOS. See [Protocol V9](recommendation-protocol-v9.md).
+
+Protocol V10 is `source_selected_metadata_identity_probe_authorized`. It is a separate Tardis
+Binance Spot trade-data source record, not a V9 retry or candidate registration. No V10 request has
+run. Its sole preregistered metadata identity probe cannot establish historical-download
+entitlement. Trade download, candle aggregation, input persistence, research, selection and OOS
+are prohibited. See
+[Protocol V10](recommendation-protocol-v10.md).

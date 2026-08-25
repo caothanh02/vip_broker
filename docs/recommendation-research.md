@@ -50,6 +50,13 @@ was rejected. No data was published; V9 cannot retry, alter the source/range, fr
 execute research, select a policy or authorize OOS. See
 [the Protocol V9 closure record](recommendation-protocol-v9.md).
 
+Protocol V10 is `source_selected_metadata_identity_probe_authorized`: it is an independent Tardis
+Binance Spot trade-data preregistration over `[2019-04-01, 2022-04-01)`, not a V9 retry. It permits
+only a future one-request metadata identity probe. It cannot establish historical-download
+entitlement; trade download, candle aggregation, data persistence, research, selection and OOS
+remain unauthorized. See
+[the Protocol V10 preregistration](recommendation-protocol-v10.md).
+
 ## Development walk-forward protocol v1
 
 This is the pre-registered governance protocol for development research. It applies before a new
