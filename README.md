@@ -2,6 +2,9 @@
 
 Safe, reproducible research, backtesting and paper-trading infrastructure for one market: BTC/USDT on 1-hour closed candles. It is not financial advice. Crypto is volatile; this repository does not enable live trading. Core public-data workflows need no API key; the optional CoinAPI availability audit reads a local-only key.
 
+For a concise current-state, governance, and continuation guide for maintainers or coding agents,
+read [PROJECT_HANDOFF.md](PROJECT_HANDOFF.md) after [AGENTS.md](AGENTS.md).
+
 ## Architecture
 
 `data → validation → features → EMA/volume/ATR strategy → optional ML filter → risk engine → simulated/dry-run broker → storage/reporting`. Strategy candidates are filled at the next candle open in the backtester. Stops win ambiguous intrabar OHLC ties, which is intentionally conservative.
