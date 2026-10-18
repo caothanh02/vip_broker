@@ -33,6 +33,43 @@ backfill, evaluator, ML inference, REST/WebSocket client, or authenticated endpo
 secret is required, read into the output, or logged. The status is observability only: it is not a
 recommendation, accuracy report, research evidence, strict-OOS evaluation, or investment advice.
 
+### Daily Windows read-only check
+
+`scripts/run-operational-check.ps1` is an orchestration-only runbook for the frozen development
+dataset. It refuses to run unless the local worktree is clean, the branch is `master`, and local
+`HEAD` matches the existing `origin/master` ref. It checks the three canonical development artifacts
+are regular files rather than symlinks, then uses `uv --offline` to run only `audit-safety` and
+`operational-status`. It creates timestamped reports under ignored `reports/operations/` and never
+uses `--overwrite`, downloads data, reads credentials, or starts a research, recommendation,
+dry-run, broker, order, REST, WebSocket, ML, or OOS workflow.
+
+During first installation only, `-BootstrapSmoke` permits one manual smoke run while exactly this
+script and this runbook are the only uncommitted files. It rejects every other changed or untracked
+path. The scheduled task never uses this switch and therefore always requires a clean worktree.
+
+The optional, local-only Windows Scheduled Task `VipBrokerNeutralOperationalCheck` runs this script
+daily at 09:00 local time using a limited interactive user token. It must not be configured to run
+with highest privileges, with a password, or with an execution-policy bypass. A failed check only
+returns a non-zero exit code; it does not delete, repair, replace, or download artifacts.
+
+Inspect its local configuration without changing Task Scheduler state:
+
+```powershell
+powershell -NoLogo -NoProfile -File scripts/install-operational-check-task.ps1 -Inspect
+```
+
+Installation is an explicit opt-in and is refused unless the repository is clean `master` matching
+its existing `origin/master` ref. It does not replace an existing task, elevate privileges, use a
+service account, or run the task after registration:
+
+```powershell
+powershell -NoLogo -NoProfile -File scripts/install-operational-check-task.ps1 -Install
+```
+
+Both scripts only write timestamped, Git-ignored reports below `reports/operations/`. The runner
+requires parseable audit/status JSON with the neutral, sealed-OOS safety contract before printing a
+success summary; an exit code alone is never treated as a passing audit.
+
 ## Dry-run operations
 
 The separate dry-run service remains a paper-only workflow. Use structured events with
